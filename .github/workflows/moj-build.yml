@@ -45,11 +45,12 @@ jobs:
         run: |
           mkdir dist
           cp build/oxtb.exe dist/
-          # Kopiowanie dokładnie tych bibliotek UCRT64, których oxtb.exe wymaga do uruchomienia
+          # Kopiowanie zestawu bibliotek runtime wymaganych przez program i OpenBLAS
           cp /ucrt64/bin/libopenblas.dll dist/
           cp /ucrt64/bin/libgfortran-5.dll dist/
           cp /ucrt64/bin/libquadmath-0.dll dist/
           cp /ucrt64/bin/libwinpthread-1.dll dist/
+          cp /ucrt64/bin/libgomp-1.dll dist/
           cp /ucrt64/bin/libgcc_s_ucrt-1.dll dist/ || true
 
       - uses: actions/upload-artifact@v4
