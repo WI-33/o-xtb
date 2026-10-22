@@ -43,7 +43,7 @@ module xtb_landscape_scan2d
    use xtb_type_environment, only : TEnvironment
    use xtb_landscape_settings, only : landscape_scan_settings, &
       & p_landscape_scan_coord_distance, landscape_missing_value, &
-      & landscape_value_present
+      & landscape_value_present, landscape_real_to_string
    use xtb_landscape_engine, only : landscape_energy_model
    use xtb_landscape_coords, only : geometry_unpack
    use xtb_landscape_scan_relax, only : landscape_scan_point, &
@@ -234,7 +234,7 @@ subroutine landscape_scan2d(env, base, at, settings, x0, grid, fail)
 
    if (grid%max_jump > scan_jump_warning) then
       call env%warning("the 2D scan grid jumps by "//&
-         & trim(real_to_string(grid%max_jump))//" hartree between two "//&
+         & trim(landscape_real_to_string(grid%max_jump, '(es15.6)'))//" hartree between two "//&
          & "consecutive points; this indicates a basin switch or a SCF "//&
          & "discontinuity", source)
    end if
@@ -356,19 +356,5 @@ pure function user_unit(coord_type) result(unit)
    end if
 
 end function user_unit
-
-!> Decimal representation of a real number for a warning message.
-function real_to_string(value) result(string)
-   !> Value to convert
-   real(wp), intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=32) :: buffer
-
-   write(buffer, '(es15.6)') value
-   string = trim(buffer)
-
-end function real_to_string
 
 end module xtb_landscape_scan2d

@@ -139,7 +139,7 @@ subroutine help(iunit, topic, status, values_only)
    end type help_option
 
    !> Number of categories and of options of the page
-   integer, parameter :: n_cat = 17, n_opt = 222
+   integer, parameter :: n_cat = 17, n_opt = 223
    !> Legal values of every option with a constrained value set.  One named
    !> array per set, referenced by the `values=` argument of `add`, so a set
    !> lives in exactly one place: `--help <topic>` prints it as a uniform
@@ -444,6 +444,15 @@ subroutine help(iunit, topic, status, values_only)
       "    step budget of the minimisation; the default is derived from the", &
       "    convergence level (3 steps per atom at level normal, clamped to", &
       "    200..10000), --cycles and the level change it"])
+   call add("--lopt-recalc N", "minimisation", &
+      "rebuild the exact Hessian every N RFO steps", &
+      [character(len=160) :: &
+      "    rebuild the exact Hessian through the provider every N RFO steps of", &
+      "    the minimisation (default 5); 0 disables the rebuild and keeps the", &
+      "    Hessian update alone, an interval above the step budget never fires, and", &
+      "    a negative value is reported and behaves like 0.  Only --lopt-engine rfo", &
+      "    refreshes its Hessian at all; the saddle search and the reaction path", &
+      "    have their own --lts-recalc and --lirc-recalc"])
    call add("--lopt-hess-step VALUE", "minimisation", &
       "FD step of the numerical Hessian (bohr)", &
       [character(len=160) :: &

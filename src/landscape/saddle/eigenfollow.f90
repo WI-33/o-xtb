@@ -64,7 +64,7 @@ module xtb_landscape_saddle_eigenfollow
    use xtb_mctc_lapack, only : mctc_syev
    use xtb_type_environment, only : TEnvironment
    use xtb_landscape_coords, only : vec_norm
-   use xtb_landscape_settings, only : landscape_log_failed
+   use xtb_landscape_settings, only : landscape_log_failed, landscape_real_to_string
    implicit none(type, external)
    private
 
@@ -304,8 +304,8 @@ subroutine landscape_follow_transition_mode(env, evals, evecs, mode, overlap_min
 
    if (overlap < overlap_min) then
       call env%warning("mode following lost the transition vector (overlap "//&
-         & trim(real_to_string(overlap))//" below the threshold "//&
-         & trim(real_to_string(overlap_min))//"); reselecting the mode", source)
+         & trim(landscape_real_to_string(overlap, '(f0.4)'))//" below the threshold "//&
+         & trim(landscape_real_to_string(overlap_min, '(f0.4)'))//"); reselecting the mode", source)
       target = mode%target
       call landscape_select_transition_mode(env, evals, evecs, target, mode, fail)
       mode%overlap = overlap
@@ -723,19 +723,5 @@ pure subroutine normalise(v)
    if (nrm > tiny(1.0_wp)) v = v/nrm
 
 end subroutine normalise
-
-!> Shortest decimal representation of a real value for a message.
-pure function real_to_string(value) result(string)
-   !> Value to convert
-   real(wp), intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=32) :: buffer
-
-   write(buffer, '(f0.4)') value
-   string = trim(buffer)
-
-end function real_to_string
 
 end module xtb_landscape_saddle_eigenfollow

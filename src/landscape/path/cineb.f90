@@ -67,7 +67,6 @@ module xtb_landscape_path_cineb
    public :: landscape_cineb_force
    public :: landscape_cineb_ignition_ready
    public :: landscape_cineb_highest_image
-   public :: landscape_cineb_parallel_component
 
 contains
 
@@ -91,23 +90,6 @@ pure subroutine landscape_cineb_force(force, tau, f_ci)
    f_ci = force - 2.0_wp*parallel*tau
 
 end subroutine landscape_cineb_force
-
-!> Component of a force along the band tangent, `F . tau` (hartree/bohr).
-!>
-!> Positive means the physical force has a component along the forward
-!> tangent, i.e. the image is pulled downhill towards the product; Eq. 5
-!> reverses exactly this component.
-pure function landscape_cineb_parallel_component(force, tau) result(parallel)
-   !> Physical force (hartree/bohr)
-   real(wp), intent(in) :: force(:)
-   !> Normalized band tangent (dimensionless)
-   real(wp), intent(in) :: tau(:)
-   !> Scalar projection (hartree/bohr)
-   real(wp) :: parallel
-
-   parallel = dot_product(force, tau)
-
-end function landscape_cineb_parallel_component
 
 !> True if the climbing image may be switched on.
 !>

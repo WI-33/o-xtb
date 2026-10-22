@@ -60,10 +60,9 @@ module xtb_landscape_saddle_prfo
    use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
    use xtb_mctc_accuracy, only : wp
    use xtb_type_environment, only : TEnvironment
-   use xtb_landscape_settings, only : landscape_ts_settings, &
-      & p_landscape_ts_prfo, p_landscape_ts_bprfo, &
-      & p_landscape_hess_update_none, landscape_convergence_measures, &
-      & landscape_lowercase
+   use xtb_landscape_settings, only : landscape_ts_settings, p_landscape_ts_prfo, &
+      & p_landscape_ts_bprfo, p_landscape_hess_update_none, &
+      & landscape_convergence_measures, landscape_lowercase, landscape_real_is_finite
    use xtb_landscape_results, only : landscape_result, landscape_step, &
       & landscape_result_add_step, landscape_result_trim, landscape_report_add, &
       & landscape_print_step
@@ -432,7 +431,7 @@ subroutine landscape_saddle_optimize(env, objective, settings, x0, result, &
    n_evals = 0
    warned_lift = .false.
 
-   if (.not. all(real_is_finite(x))) then
+   if (.not. all(landscape_real_is_finite(x))) then
       result%message = "initial coordinates are not finite"
       call finish()
       return
@@ -440,7 +439,8 @@ subroutine landscape_saddle_optimize(env, objective, settings, x0, result, &
 
    call objective%evaluate(x, energy, g, fail)
    n_evals = n_evals + 1
-   if (fail .or. .not. real_is_finite(energy) .or. .not. all(real_is_finite(g))) then
+   if (fail .or. .not. landscape_real_is_finite(energy) .or. &
+         & .not. all(landscape_real_is_finite(g))) then
       result%message = "initial energy or gradient is not finite"
       call finish()
       return
@@ -603,8 +603,8 @@ subroutine landscape_saddle_optimize(env, objective, settings, x0, result, &
       x_trial = x + step
       call objective%evaluate(x_trial, e_trial, g_trial, fail)
       n_evals = n_evals + 1
-      if (fail .or. .not. real_is_finite(e_trial) .or. &
-            & .not. all(real_is_finite(g_trial))) then
+      if (fail .or. .not. landscape_real_is_finite(e_trial) .or. &
+            & .not. all(landscape_real_is_finite(g_trial))) then
          trust = max(settings%trust_min, settings%eta_shrink*trust)
          nreject = nreject + 1
          if (nreject >= stagnate_patience) then
@@ -804,8 +804,8 @@ contains
          x_esc = x + dvec
          call objective%evaluate(x_esc, e_esc, g_esc, local_fail)
          n_evals = n_evals + 1
-         if (local_fail .or. .not. real_is_finite(e_esc) .or. &
-               & .not. all(real_is_finite(g_esc))) then
+         if (local_fail .or. .not. landscape_real_is_finite(e_esc) .or. &
+               & .not. all(landscape_real_is_finite(g_esc))) then
             call env%warning("the escape displacement could not be evaluated; "//&
                & "the last valid geometry is kept as the start", source)
             exit
@@ -1015,21 +1015,6 @@ subroutine reset_result(result)
    result%conv%converged = .false.
 
 end subroutine reset_result
-
-!> True if a value is finite (elemental, so it accepts scalars and arrays).
-!>
-!> `ieee_is_finite` inspects the representation, so, unlike `abs(v) <= huge`,
-!> it does not raise the invalid exception on a NaN - a checked build
-!> (`-ffpe-trap=invalid`) aborts on that comparison.
-elemental function real_is_finite(v) result(finite)
-   !> Value to test
-   real(wp), intent(in) :: v
-   !> True if the value is finite
-   logical :: finite
-
-   finite = ieee_is_finite(v)
-
-end function real_is_finite
 
 !> Append a geometry to a trajectory buffer, growing it geometrically.
 subroutine append_frame(frames, nframes, x)

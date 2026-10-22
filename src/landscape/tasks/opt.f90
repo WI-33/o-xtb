@@ -138,6 +138,13 @@ subroutine landscape_optimize(env, mol, chk, calc, settings, result)
          & settings%engine%hess_step, " bohr"
       write(env%unit, '(1x,a,es15.6)') "Hessian SCC accuracy:     ", &
          & settings%engine%hess_acc
+      ! `recalc` is the knob `--lopt-recalc` changes and it decides how often
+      ! the pause of a rebuilt Hessian comes back, so its effective value is
+      ! echoed like the two finite difference parameters above.  Only `rfo`
+      ! rebuilds at all (`optimize/driver.f90`, the `use_trust` guard), which
+      ! the line says instead of printing a second `(not used: ...)` record.
+      write(env%unit, '(1x,a,i0,a)') "Hessian rebuild interval: ", &
+         & settings%recalc, " steps (rfo only, 0 = never)"
       unused_hess = opt_unused_hessian_step(settings)
       if (len(unused_hess) > 0) then
          write(env%unit, '(1x,a,a,a)') "(not used: ", unused_hess, ")"
@@ -159,7 +166,8 @@ subroutine landscape_optimize(env, mol, chk, calc, settings, result)
    ! The provider factory reports an unknown `hessian_source`; the caller must
    ! abort instead of silently running with the default provider.
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
-      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file)
+      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
+      & printlevel=settings%printlevel)
    if (.not. allocated(hp)) return
    call engine%set_hessian_provider(hp)
    call engine%set_calculator(calc)

@@ -4029,6 +4029,34 @@ add_test("xtb/landscape-opt-knobs"
   -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-opt-knobs
   -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
 
+# `xtb/landscape-hess-progress`: the numerical Hessian is 6N displaced single
+# points at `printlevel = -1`, so a run used to go quiet for the whole build
+# (`docs/_simplify-recon/201`).  The provider now prints one line **before**
+# the displacements start, naming the source and the exact number of
+# evaluations it will make; a periodic rebuild announces itself the same way
+# and a model Hessian (0 evaluations) prints nothing.  The stretched water
+# needs 10 RFO steps with the default interval, so one rebuild is in the run.
+add_test("xtb/landscape-hess-progress"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-CLI-PY}
+  "-DARGS=hessprogress;${LANDSCAPE-E2E-XTB};${LANDSCAPE-H2O};${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-hess-progress;${LANDSCAPE-H2O-STRETCH}"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-hess-progress
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
+
+# `xtb/landscape-opt-recalc`: `--lopt-recalc` is the flag of the Hessian
+# rebuild interval the field did not have (it was fixed at 5).  0 disables the
+# rebuild (one Hessian, the step-6 pause is gone), 2 rebuilds four times, an
+# explicit 5 is byte identical to the default, and a value that is not a
+# non-negative integer is reported - fatal with `--strict`.
+add_test("xtb/landscape-opt-recalc"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-CLI-PY}
+  "-DARGS=optrecalc;${LANDSCAPE-E2E-XTB};${LANDSCAPE-H2O};${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-opt-recalc;${LANDSCAPE-H2O-STRETCH}"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-opt-recalc
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
+
 # `xtb/landscape-scan-knobs`: `--lscan-hess-step` and `--lscan-sccacc` change
 # the byte image of `xtbscan.log` of an RFO relaxation.
 add_test("xtb/landscape-scan-knobs"
@@ -4770,6 +4798,33 @@ add_test("xtb/landscape-program-name"
   -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-program-name
   -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
 
+# A non-finite value for a numeric flag used to be computed with.  The `read`
+# parsers accept `nan`/`inf`, `<`/`>` are false against NaN, and in a release
+# build `--lvib-temp nan` printed a complete table of NaN (`H(0)-H(T)`, `T*S`,
+# `G(T)`) with exit status 0 - a silent wrong answer - while `--acc nan` stored a
+# NaN SCC accuracy.  The five landscape flags are refused where the merged
+# setting is consumed (the xcontrol block merges after the parser, so a
+# parse-site check would miss `$thermo temp=nan`); `--acc` keeps the default.
+add_test("xtb/landscape-nonfinite-value"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-CLI-PY}
+  "-DARGS=nonfinite;${LANDSCAPE-E2E-XTB};${LANDSCAPE-H2O};${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-nonfinite"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-nonfinite
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
+
+# The `ir` subcommand's fatal paths exited with status 0: `oxtb ir water.xyz`
+# used an unallocated `intent(out)` file name and `irmod.f90` aborted a corrupted
+# dipole derivative file with a bare `stop`.  Both are reported through the
+# environment now and `--born` has the documented default `born.out`.
+add_test("xtb/landscape-ir-fatal-status"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-CLI-PY}
+  "-DARGS=irfatal;${LANDSCAPE-E2E-XTB};${LANDSCAPE-H2O};${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-ir-fatal"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-ir-fatal
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
+
 # `--help` is a grouped index now (`docs/_simplify-recon/123-help-restructure.md`)
 # and `--help <topic>` prints one option, one category or an error.  Nothing
 # covered the dispatch before: `xtb/Argparser_print_help` only ran `--help` and
@@ -4840,6 +4895,8 @@ set_tests_properties(
   "xtb/landscape-method-native"
   "xtb/landscape-method-table"
   "xtb/landscape-opt-knobs"
+  "xtb/landscape-hess-progress"
+  "xtb/landscape-opt-recalc"
   "xtb/landscape-scan-knobs"
   "xtb/landscape-hess-step-alias"
   "xtb/landscape-restart-knobs"
@@ -4879,6 +4936,8 @@ set_tests_properties(
   "xtb/landscape-banner"
   "xtb/landscape-help-topic"
   "xtb/landscape-help-colour"
+  "xtb/landscape-nonfinite-value"
+  "xtb/landscape-ir-fatal-status"
   PROPERTIES
   ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1"
 )

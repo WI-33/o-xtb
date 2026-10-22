@@ -83,7 +83,8 @@ subroutine landscape_single_point(env, mol, chk, calc, settings, result)
 
    call new_landscape_engine(engine, settings%engine)
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
-      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file)
+      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
+      & printlevel=settings%printlevel)
    if (.not. allocated(hp)) return
    call engine%set_hessian_provider(hp)
    call engine%set_calculator(calc)

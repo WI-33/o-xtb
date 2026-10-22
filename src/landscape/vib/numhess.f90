@@ -124,7 +124,8 @@ subroutine landscape_vib_hessian(env, mol, chk, calc, settings, hess, energy, &
    ! returns without a provider; the caller must abort instead of falling back
    ! to a default backend.
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
-      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file)
+      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
+      & printlevel=settings%printlevel)
    if (.not. allocated(hp)) then
       fail = .true.
       call engine%destroy()

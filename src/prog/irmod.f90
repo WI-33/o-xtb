@@ -15,6 +15,8 @@
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
 
+! Modified by the o-xtb landscape task suite, 2026.
+
 !> IR / Raman intensities from DFTB+ Hessians
 module xtb_prog_ir
    use xtb_mctc_accuracy, only : wp
@@ -60,10 +62,12 @@ subroutine xtbIR(env, argParser)
 
    type(TReader) :: reader
    character(len=:), allocatable :: file,born
+   character(len=16) :: ibuffer
    real(wp), allocatable :: freq(:), hessian(:, :), dipd(:, :), dipt(:),atmasslong(:),rmass(:)
    real(wp) :: htot, gtot, zp, sum2, trdip(3), autokmmol=1.7770969e+6_wp,xsum
    integer :: nFiles, ftype, hFormat, nimag, i,j,k, ifile, ia, ic,ios
    logical :: massWeighted
+   logical :: born_exists
 
    !> dipd are 1. mixed 2nd derivative of energy wrt atomic positions and electric field
    !           2. 1st derivative of dipole moments wrt to atomic positions
@@ -108,13 +112,27 @@ subroutine xtbIR(env, argParser)
    !>read in dipole derivatives from dftb+ custom file (born.out)
    allocate(dipd(3,3*mol%n))
 
+   !> A missing file is a plain user error now that the name has a default:
+   !> name it before the reader produces a raw `ERROR STOP` of its own.
+   inquire(file=born, exist=born_exists)
+   if (.not. born_exists) then
+      call env%error("the dipole derivative file '"//born//"' does not "//&
+         & "exist; pass --born <file> or write '"//born//"'", source)
+      call env%checkpoint("Dipole derivatives could not be read from '"//born//"'")
+   end if
+
    call reader%open(born)
    do i=1,3*mol%n
       read(reader%unit,*,iostat=ios) dipd(1:3,i)  
       if (ios < 0 ) then
-          !>abort run if born charges can't be read
-          write(env%unit,*) "'"//born//"' file corrupted ... aborting" 
-          stop 
+          !>abort run if born charges can't be read.  A bare `stop` returned
+          !> exit status 0 from a fatal path; the project's diagnostic goes
+          !> through `env`, whose checkpoint terminates with status 1.
+          write(ibuffer, '(i0)') i
+          call env%error("'"//born//"' file corrupted: dipole derivatives "//&
+             & "missing for Cartesian component "//trim(ibuffer), source)
+          call env%checkpoint("Dipole derivatives could not be read from '"//&
+             & born//"'")
       end if
    end do
    call reader%close
@@ -264,6 +282,11 @@ subroutine parseArguments(env, args, htype, massWeighted, born)
 
    htype = hessType%tmol
    massWeighted = .false.
+   !> Default name of the dipole derivative file.  `--born` overrides it; the
+   !> default is what the reader below and the help text have always named
+   !> (`born.out`, the DFTB+ custom file), so `oxtb ir water.xyz` without the
+   !> flag used an unallocated name and died on a garbage file name.
+   born = 'born.out'
 
    nFlags = args%countFlags()
    call args%nextFlag(flag)

@@ -40,6 +40,7 @@ complete -c oxtb -l lopt-engine -x -a 'sd cg lbfgs bfgs diis rfo' -d 'minimiser:
 complete -c oxtb -l lopt-level -x -a 'superloose loose normal tight vtight' -d 'convergence level of the minimisation'
 complete -c oxtb -l lopt-hessian -x -a 'numerical model file' -d 'Hessian backend: numerical, model or file'
 complete -c oxtb -l lopt-max-steps -x -d 'step budget of the minimisation'
+complete -c oxtb -l lopt-recalc -x -d 'rebuild the exact Hessian every N RFO steps'
 complete -c oxtb -l lopt-hess-step -x -d 'FD step of the numerical Hessian (bohr)'
 complete -c oxtb -l lopt-sccacc -x -d 'SCC accuracy of the FD Hessian points'
 complete -c oxtb -l lopt-restart -x -a 'off pin warm' -d 'wavefunction restart policy: off, pin or warm'

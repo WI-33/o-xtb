@@ -68,6 +68,7 @@
 !> Units: frequencies in cm^-1, temperatures in kelvin, `rotor_cutoff` and
 !> `imag_cutoff` in cm^-1, energies in hartree.
 module xtb_landscape_vib_thermo
+   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
    use xtb_mctc_accuracy, only : wp
    use xtb_mctc_convert, only : autoamu
    use xtb_type_environment, only : TEnvironment
@@ -236,19 +237,43 @@ end subroutine landscape_vib_set_thermo_settings
 !> and from the API).
 subroutine landscape_vib_check_thermo_settings(env, ok)
    character(len=*), parameter :: source = 'landscape_vib_thermo_settings'
+   character(len=160) :: buffer
    !> Computational environment
    type(TEnvironment), intent(inout) :: env
    !> True if every effective parameter is usable
    logical, intent(out) :: ok
 
-   integer :: ntemp
+   integer :: ntemp, i
 
    ok = .true.
    ntemp = max(1, min(set%nthermo, size(set%thermotemp)))
+
+   ! A non-finite value passes every comparison below (a comparison against
+   ! NaN is false, a comparison against Inf is only caught on one side), and
+   ! both routes accept it: `read(sec,*,iostat=)` of the command line parses
+   ! `nan`/`inf`, and the `$thermo` block has no value check of its own.  In a
+   ! release build that used to reach the RRHO model and print a table of NaN
+   ! with exit status 0, so the whole-array check comes first here.
+   do i = 1, ntemp
+      if (.not. ieee_is_finite(set%thermotemp(i))) then
+         write(buffer, '(a,es15.6,a)') "--lvib-temp ", set%thermotemp(i), &
+            & " is not a finite temperature"
+         call env%error(trim(buffer)//" (checked after the xcontrol `$thermo` "//&
+            & "block and --lvib-temp are merged)", source)
+         ok = .false.
+      end if
+   end do
    if (any(set%thermotemp(1:ntemp) <= 0.0_wp)) then
       call env%error("the thermochemical temperature must be positive "//&
          & "(checked after the xcontrol `$thermo` block and --lvib-temp are "//&
          & "merged)", source)
+      ok = .false.
+   end if
+   if (.not. ieee_is_finite(set%thermo_fscal)) then
+      write(buffer, '(a,es15.6,a)') "--lvib-freq-scal ", set%thermo_fscal, &
+         & " is not a finite scaling factor"
+      call env%error(trim(buffer)//" (checked after the xcontrol `$thermo` "//&
+         & "block and --lvib-freq-scal are merged)", source)
       ok = .false.
    end if
    if (set%thermo_fscal <= 0.0_wp) then
@@ -257,10 +282,24 @@ subroutine landscape_vib_check_thermo_settings(env, ok)
          & "are merged)", source)
       ok = .false.
    end if
+   if (.not. ieee_is_finite(set%thermo_ithr)) then
+      write(buffer, '(a,es15.6,a)') "--lvib-imag-cutoff ", set%thermo_ithr, &
+         & " is not a finite frequency cutoff"
+      call env%error(trim(buffer)//" (checked after the xcontrol `$thermo` "//&
+         & "block and --lvib-imag-cutoff are merged)", source)
+      ok = .false.
+   end if
    if (set%thermo_ithr > 0.0_wp) then
       call env%error("the imaginary frequency cutoff must not be positive "//&
          & "(checked after the xcontrol `$thermo` block and "//&
          & "--lvib-imag-cutoff are merged)", source)
+      ok = .false.
+   end if
+   if (.not. ieee_is_finite(set%thermo_sthr)) then
+      write(buffer, '(a,es15.6,a)') "--lvib-rotor-cutoff ", set%thermo_sthr, &
+         & " is not a finite frequency cutoff"
+      call env%error(trim(buffer)//" (checked after the xcontrol `$thermo` "//&
+         & "block and --lvib-rotor-cutoff are merged)", source)
       ok = .false.
    end if
    if (set%thermo_sthr < 0.0_wp) then

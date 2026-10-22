@@ -15,6 +15,8 @@
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
 
+! Modified by the o-xtb landscape task suite, 2026.
+
 subroutine spline_cubic_set ( n, t, y, ibcbeg, ybcbeg, ibcend, ybcend, ypp )
 
 !*****************************************************************************80
@@ -162,7 +164,11 @@ subroutine spline_cubic_set ( n, t, y, ibcbeg, ybcbeg, ibcend, ybcend, ypp )
     write ( *, '(a)' ) 'SPLINE_CUBIC_SET - Fatal error!'
     write ( *, '(a)' ) '  The number of knots must be at least 2.'
     write ( *, '(a,i8)' ) '  The input value of N = ', n
-    stop 1
+    ! `stop 1` looks fatal but a numeric stop code is not a reliable non-zero
+    ! exit across all callers; `error stop 1` is, and this routine has no
+    ! `TEnvironment` to report through.  It is reachable from the `$bias` path
+    ! of `src/cqpath.f90` and `src/bias_path.f90`.
+    error stop 1
   end if
 
   do i = 1, n - 1
@@ -172,7 +178,7 @@ subroutine spline_cubic_set ( n, t, y, ibcbeg, ybcbeg, ibcend, ybcend, ypp )
       write ( *, '(a)' ) '  The knots must be strictly increasing, but'
       write ( *, '(a,i8,a,g14.6)' ) '  T(',  i,') = ', t(i)
       write ( *, '(a,i8,a,g14.6)' ) '  T(',i+1,') = ', t(i+1)
-      stop 1
+      error stop 1
     end if
   end do
 !
@@ -208,7 +214,7 @@ subroutine spline_cubic_set ( n, t, y, ibcbeg, ybcbeg, ibcend, ybcend, ypp )
     write ( *, '(a)' ) 'SPLINE_CUBIC_SET - Fatal error!'
     write ( *, '(a)' ) '  The boundary flag IBCBEG must be 0, 1, 2 or 3.'
     write ( *, '(a,i8)' ) '  The input value is IBCBEG = ', ibcbeg
-    stop 1
+    error stop 1
   end if
 !
 !  Set the intermediate equations.
@@ -245,7 +251,7 @@ subroutine spline_cubic_set ( n, t, y, ibcbeg, ybcbeg, ibcend, ybcend, ypp )
     write ( *, '(a)' ) 'SPLINE_CUBIC_SET - Fatal error!'
     write ( *, '(a)' ) '  The boundary flag IBCEND must be 0, 1, 2 or 3.'
     write ( *, '(a,i8)' ) '  The input value is IBCEND = ', ibcend
-    stop 1
+    error stop 1
   end if
 !
 !  Special case:

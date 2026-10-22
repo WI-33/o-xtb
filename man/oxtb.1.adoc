@@ -479,12 +479,25 @@ MINIMISATION OPTIONS (--lopt)
     Hessian backend, one of `numerical` (default; the suite's own central
     differences of the electronic gradient), `model` (Lindh-D2 model Hessian
     from `src/model_hessian`) or `file` (read the TURBOMOLE layout written by an
-    earlier run, see `--lopt-hessian-file`).
+    earlier run, see `--lopt-hessian-file`). The numerical source costs 6N
+    displaced single points; one line names that number before the first
+    displacement starts, and every periodic rebuild announces itself the same
+    way (see `--lopt-recalc`). The `model` and `file` sources evaluate nothing
+    and print no such line.
 
 *--lopt-max-steps* 'N'::
     step budget of the minimisation. The default is derived from the convergence
     level (3 steps per atom, clamped to 200..10000); `--cycles` and the level
     change it. A budget given here wins over the level-derived value.
+
+*--lopt-recalc* 'N'::
+    rebuild the exact Hessian through the provider every N RFO steps (default
+    5); 0 disables the rebuild, so the run keeps the Hessian update alone, and
+    an interval above the step budget never fires. A negative value is reported
+    (and fatal with `--strict`) and behaves like 0. Only `--lopt-engine rfo`
+    rebuilds at all; the saddle search and the reaction path have their own
+    `--lts-recalc` and `--lirc-recalc`. Each rebuild announces itself with one
+    line before its displaced single points start.
 
 *--lopt-hess-step* 'VALUE'::
     finite difference step of the numerical Hessian in bohr (default 0.005).

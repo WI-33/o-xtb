@@ -36,6 +36,7 @@ module xtb_landscape_settings
    use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan, &
       & ieee_is_finite, ieee_is_nan
    use xtb_mctc_accuracy, only : wp
+   use xtb_mctc_convert, only : aatoau
    use xtb_type_environment, only : TEnvironment
    implicit none(type, external)
    private
@@ -75,8 +76,11 @@ module xtb_landscape_settings
    public :: p_landscape_irc_gs, p_landscape_irc_hpc, p_landscape_irc_lqa
    public :: p_landscape_irc_eulerpc
    public :: landscape_irc_method_name, landscape_irc_method_from_name
-   public :: landscape_irc_method_known
    public :: landscape_lowercase
+   public :: landscape_int_to_string, landscape_real_to_string
+   public :: landscape_real_is_finite
+   public :: landscape_conv_level_count, landscape_conv_level_names
+   public :: landscape_conv_level_index
 
    !> Minimisation algorithm identifiers (`landscape_opt_settings%algorithm`)
    integer, parameter :: p_landscape_opt_sd = 1
@@ -92,6 +96,23 @@ module xtb_landscape_settings
    integer, parameter :: p_landscape_hess_update_sr1 = 2
    integer, parameter :: p_landscape_hess_update_bofill = 3
    integer, parameter :: p_landscape_hess_update_powell = 4
+
+   !> Number of convergence levels of the suite, i.e. the length of
+   !> `landscape_conv_level_names` and of the threshold rows of
+   !> `landscape_settings_set_conv_level`.
+   integer, parameter :: landscape_conv_level_count = 5
+   !> Names of the convergence levels, **the** single source of the set.
+   !>
+   !> `landscape_conv_level_index`/`landscape_conv_level_known` look the name up
+   !> here and `landscape_settings_set_conv_level` dispatches on the index, so
+   !> the two cannot list different levels; the threshold tables of that routine
+   !> are declared with `landscape_conv_level_count`, so a name added here
+   !> without a threshold row does not compile.  `src/xhelp.f90` keeps its own
+   !> `v_level` table (it is a pre-existing file and may not `use` the suite),
+   !> and `xtb/landscape-help-values` ties it to this list: every declared help
+   !> value has to be accepted by the binary, which accepts exactly these names.
+   character(len=16), parameter :: landscape_conv_level_names(landscape_conv_level_count) = &
+      [character(len=16) :: "superloose", "loose", "normal", "tight", "vtight"]
 
    !> Restart policy of the landscape engine (see `landscape_engine_control`)
    integer, parameter :: p_landscape_restart_off = 0
@@ -478,11 +499,10 @@ module xtb_landscape_settings
       integer :: algorithm = p_landscape_opt_lbfgs
       !> True when `--lopt-engine` was given.
       !>
-      !> The task echoes the builtin default `lbfgs` as a `[NOTICE]` line (CLI
-      !> redesign section 8.3, item D3): the native `--opt` runs ANCopt, so the
-      !> default engine of this task is not obvious to a user who knows the
-      !> native flag.  The notice is suppressed when the algorithm was named on
-      !> the command line, which is what this flag records.
+      !> The engine banner of `xtb_prog_main` marks the announcement as
+      !> `(explicit)` when this flag is set and as `(default)` otherwise: the
+      !> native `--opt` runs ANCopt, so the default engine of this task is not
+      !> obvious to a user who knows the native flag.
       logical :: algorithm_was_set = .false.
       !> Flag that selected `algorithm`, empty until one was named on the
       !> command line.
@@ -509,12 +529,12 @@ module xtb_landscape_settings
       real(wp) :: hlow = 1.0e-2_wp
       !> Use an Armijo backtracking line search
       logical :: line_search = .true.
-      !> Lower trust radius bound (bohr)
-      real(wp) :: trust_min = 1.8897e-3_wp
-      !> Upper trust radius bound of the RFO step (bohr); the effective upper
-      !> bound is `min(trust_max, max_displ)` so that the documented
-      !> single-step limit holds for every algorithm.
-      real(wp) :: trust_max = 1.8897_wp
+      !> Lower trust radius bound (bohr), the 1e-3 Angstrom of MAPLE
+      real(wp) :: trust_min = 1.0e-3_wp*aatoau
+      !> Upper trust radius bound of the RFO step (bohr), the 1 Angstrom of
+      !> MAPLE; the effective upper bound is `min(trust_max, max_displ)` so
+      !> that the documented single-step limit holds for every algorithm.
+      real(wp) :: trust_max = 1.0_wp*aatoau
       !> Denominator guard of the RFO secular equation
       real(wp) :: evals_eps = 1.0e-10_wp
       !> Margin between the RFO shift bracket and the smallest eigenvalue
@@ -527,6 +547,13 @@ module xtb_landscape_settings
       !> evaluate 6N+1 single points on **every** RFO macro step.  With the
       !> cheap `model` source a smaller value would be affordable, but the
       !> default (`numerical`) must stay tractable.
+      !>
+      !> Set from the command line by `--lopt-recalc N` (`0` disables the
+      !> rebuild, an interval above the step budget simply never fires, a
+      !> negative value is reported and behaves like 0); the saddle search and
+      !> the reaction path carry the same knob as `--lts-recalc` and
+      !> `--lirc-recalc` on their own settings objects, which have their own
+      !> defaults (1 and -1) because their cost per step differs.
       integer :: recalc = 5
       !> Trust radius shrink factor for rejected steps
       real(wp) :: eta_shrink = 0.75_wp
@@ -605,9 +632,6 @@ module xtb_landscape_settings
       type(landscape_scan_coord_settings) :: coord(2)
       !> Scan the grid forwards and backwards and report the hysteresis
       logical :: bidirectional = .true.
-      !> Sequential semantics for `ndim = 1`; `ndim = 2` always uses the
-      !> Cartesian product grid
-      logical :: sequential = .true.
       !> Warm start every point from the geometry of the previous point
       !> (only the geometry is reused, the wavefunction policy stays with the
       !> engine restart mode, see `landscape_engine_control%restart_mode`)
@@ -737,10 +761,10 @@ module xtb_landscape_settings
       !> Initial trust radius of the P-RFO step (bohr), the `--lts trust=0.1`
       !> shortcut of PLAN section 6.3
       real(wp) :: trust = 3.7795e-1_wp
-      !> Lower bound of the trust radius (bohr)
-      real(wp) :: trust_min = 1.8897e-3_wp
-      !> Upper bound of the trust radius (bohr)
-      real(wp) :: trust_max = 1.8897_wp
+      !> Lower bound of the trust radius (bohr), the 1e-3 Angstrom of MAPLE
+      real(wp) :: trust_min = 1.0e-3_wp*aatoau
+      !> Upper bound of the trust radius (bohr), the 1 Angstrom of MAPLE
+      real(wp) :: trust_max = 1.0_wp*aatoau
       !> Trust radius shrink factor after a rejected or poorly predicted step
       real(wp) :: eta_shrink = 0.75_wp
       !> Trust radius expansion factor after a well predicted step
@@ -814,16 +838,16 @@ module xtb_landscape_settings
       logical :: escape_step_was_set = .false.
       !> Half separation of the two dimer images (bohr), i.e. the distance of
       !> each image from the common midpoint.  This is the pysisyphus
-      !> convention of PLAN section 5.3.6 (`1.8897e-2` bohr = 1e-2 Angstrom),
-      !> not the VASP one where `DdR` denotes twice that value.  The
-      !> `[to be calibrated]` marker is retired: report 28 section 6.4 measured that
-      !> `delta x 8` changes the dimer curvature by 0.0013 % and the analytic
-      !> Mueller-Brown check pins the value to 0.07 %, so the convention only
-      !> has to be the documented one.
-      real(wp) :: delta = 1.8897e-2_wp
+      !> convention of PLAN section 5.3.6 (`delta` = 1e-2 Angstrom =
+      !> `1.0e-2_wp*aatoau` bohr), not the VASP one where `DdR` denotes twice
+      !> that value.  The `[to be calibrated]` marker is retired: report 28
+      !> section 6.4 measured that `delta x 8` changes the dimer curvature by
+      !> 0.0013 % and the analytic Mueller-Brown check pins the value to
+      !> 0.07 %, so the convention only has to be the documented one.
+      real(wp) :: delta = 1.0e-2_wp*aatoau
       !> Finite difference step of the force along the translation direction
       !> (bohr), the `dR = 1e-3` Angstrom of Henkelman & Jonsson
-      real(wp) :: dR = 1.8897e-3_wp
+      real(wp) :: dR = 1.0e-3_wp*aatoau
       !> Finite difference angle of the dimer rotation (rad), the
       !> `delta theta = 1e-4` rad of Henkelman & Jonsson
       real(wp) :: rot_dtheta = 1.0e-4_wp
@@ -929,14 +953,6 @@ module xtb_landscape_settings
       !> M6 validation round measured it more accurate *and* 8.5x cheaper than
       !> `gs` (report 44 section 3.3), see the type comment above
       integer :: method = p_landscape_irc_hpc
-      !> True when `--lirc-method` was given.
-      !>
-      !> The default method is `hpc`, not the `gs` of the older documentation
-      !> (behaviour change of the M6 validation round), so the task echoes the
-      !> active default as a `[NOTICE]` line (CLI redesign section 8.3, item
-      !> D2); naming the flag on the command line suppresses the notice
-      !> (recorded here).
-      logical :: method_was_set = .false.
       !> Flag that selected `method`, empty until one was named on the command
       !> line; the state of the alias conflict check of
       !> `xtb_prog_main::set_landscape_irc_algorithm` (CLI redesign section 4.3,
@@ -1091,13 +1107,14 @@ module xtb_landscape_settings
       logical :: endpoint_relax = .true.
       !> Kabsch aligned RMSD between the endpoint and its relaxed minimum
       !> below which the endpoint counts as having reached a minimum (bohr).
-      !> MAPLE `rmsd_end` is 1.8897e-1 bohr = 0.1 angstrom.  The criterion is
-      !> part of `endpoint_reached` and therefore of `result%reached_min_*`;
+      !> MAPLE `rmsd_end` is 0.1 angstrom = `1.0e-1_wp*aatoau` bohr.  The
+      !> criterion is part of `endpoint_reached` and therefore of
+      !> `result%reached_min_*`;
       !> it needs a relaxed endpoint and is **not applied** when
       !> `endpoint_relax = .false.` (there is no relaxed minimum to compare
       !> with, the endpoint is then assigned by the termination signal alone;
       !> `irc.log` reports the criterion and states when it was skipped)
-      real(wp) :: rmsd_end = 1.8897e-1_wp
+      real(wp) :: rmsd_end = 1.0e-1_wp*aatoau
       !> Electronic temperature frozen for the whole run (kelvin); copied
       !> into the engine control and pushed into the calculator (M4 hard
       !> constraint 1)
@@ -1220,48 +1237,37 @@ subroutine landscape_settings_set_conv_level(self, level)
    !> Level name
    character(len=*), intent(in) :: level
 
-   select case (landscape_lowercase(level))
-   case ('superloose')
-      self%g_max = 4.6e-3_wp
-      self%g_rms = 3.0e-3_wp
-      self%d_max = 7.9e-3_wp
-      self%d_rms = 5.2e-3_wp
-      self%e_tol = 5.0e-4_wp
-      self%engine%acc = 3.0_wp
-      self%max_steps_multiplier = 1
-   case ('loose')
-      self%g_max = 2.0e-3_wp
-      self%g_rms = 5.0e-4_wp
-      self%d_max = 1.0e-2_wp
-      self%d_rms = 7.0e-3_wp
-      self%e_tol = 5.0e-5_wp
-      self%engine%acc = 2.0_wp
-      self%max_steps_multiplier = 2
-   case ('normal')
-      self%g_max = 3.0e-4_wp
-      self%g_rms = 1.0e-4_wp
-      self%d_max = 4.0e-3_wp
-      self%d_rms = 2.0e-3_wp
-      self%e_tol = 5.0e-6_wp
-      self%engine%acc = 1.0_wp
-      self%max_steps_multiplier = 3
-   case ('tight')
-      self%g_max = 1.0e-4_wp
-      self%g_rms = 3.0e-5_wp
-      self%d_max = 1.0e-3_wp
-      self%d_rms = 6.0e-4_wp
-      self%e_tol = 1.0e-6_wp
-      self%engine%acc = 0.2_wp
-      self%max_steps_multiplier = 5
-   case ('vtight')
-      self%g_max = 3.0e-5_wp
-      self%g_rms = 8.0e-6_wp
-      self%d_max = 2.0e-4_wp
-      self%d_rms = 1.0e-4_wp
-      self%e_tol = 1.0e-7_wp
-      self%engine%acc = 0.05_wp
-      self%max_steps_multiplier = 20
-   end select
+   !> `g_max`, `g_rms`, `d_max`, `d_rms`, `e_tol` (hartree/bohr, hartree),
+   !> the SCC accuracy and the step-budget multiplier of one level, indexed
+   !> like `landscape_conv_level_names`
+   real(wp), parameter :: g_max(landscape_conv_level_count) = &
+      [4.6e-3_wp, 2.0e-3_wp, 3.0e-4_wp, 1.0e-4_wp, 3.0e-5_wp]
+   real(wp), parameter :: g_rms(landscape_conv_level_count) = &
+      [3.0e-3_wp, 5.0e-4_wp, 1.0e-4_wp, 3.0e-5_wp, 8.0e-6_wp]
+   real(wp), parameter :: d_max(landscape_conv_level_count) = &
+      [7.9e-3_wp, 1.0e-2_wp, 4.0e-3_wp, 1.0e-3_wp, 2.0e-4_wp]
+   real(wp), parameter :: d_rms(landscape_conv_level_count) = &
+      [5.2e-3_wp, 7.0e-3_wp, 2.0e-3_wp, 6.0e-4_wp, 1.0e-4_wp]
+   real(wp), parameter :: e_tol(landscape_conv_level_count) = &
+      [5.0e-4_wp, 5.0e-5_wp, 5.0e-6_wp, 1.0e-6_wp, 1.0e-7_wp]
+   real(wp), parameter :: acc(landscape_conv_level_count) = &
+      [3.0_wp, 2.0_wp, 1.0_wp, 0.2_wp, 0.05_wp]
+   integer, parameter :: multiplier(landscape_conv_level_count) = &
+      [1, 2, 3, 5, 20]
+
+   !> Index of the level in `landscape_conv_level_names`, 0 for a name that is
+   !> not a level (the settings stay untouched, the caller reports the error)
+   integer :: index
+
+   index = landscape_conv_level_index(level)
+   if (index == 0) return
+   self%g_max = g_max(index)
+   self%g_rms = g_rms(index)
+   self%d_max = d_max(index)
+   self%d_rms = d_rms(index)
+   self%e_tol = e_tol(index)
+   self%engine%acc = acc(index)
+   self%max_steps_multiplier = multiplier(index)
 
 end subroutine landscape_settings_set_conv_level
 
@@ -1342,6 +1348,64 @@ pure function landscape_lowercase(name) result(lower)
    end do
 
 end function landscape_lowercase
+
+!> Decimal representation of an integer for an error or warning message.
+!>
+!> One implementation for the suite: this replaced six private copies in
+!> `path/gsm.f90`, `tasks/{irc,scan,ts,vib}.f90` and `types/hessian.f90`.
+pure function landscape_int_to_string(value) result(string)
+   !> Value to convert
+   integer, intent(in) :: value
+   !> Decimal string
+   character(len=:), allocatable :: string
+
+   character(len=16) :: buffer
+
+   write(buffer, '(i0)') value
+   string = trim(buffer)
+
+end function landscape_int_to_string
+
+!> Decimal representation of a real number for a message.
+!>
+!> The **format is an argument**, not a constant: the five copies this replaces
+!> used three different ones (`es15.6` in `scan/relax_scan.f90`,
+!> `scan/scan1d.f90` and `scan/scan2d.f90`, `es16.8` in
+!> `types/hessian.f90`, `f0.4` in `saddle/eigenfollow.f90`), and every call site
+!> passes the format it had, so no printed message changes.  A single default
+!> would have silently rewritten four of the five.
+pure function landscape_real_to_string(value, fmt) result(string)
+   !> Value to convert
+   real(wp), intent(in) :: value
+   !> Edit descriptor of the conversion, e.g. `'(es15.6)'`
+   character(len=*), intent(in) :: fmt
+   !> Formatted string, trailing blanks removed
+   character(len=:), allocatable :: string
+
+   character(len=32) :: buffer
+
+   write(buffer, fmt) value
+   string = trim(buffer)
+
+end function landscape_real_to_string
+
+!> True if the value is finite, i.e. neither NaN nor +/-Inf.
+!>
+!> `ieee_is_finite` reads the representation, so, unlike `abs(x) <= huge`, it
+!> does not raise the invalid exception when `x` is a NaN - a checked build
+!> (`-ffpe-trap=invalid`) aborts on that comparison, and this predicate exists
+!> to guard exactly that case.  Elemental, so it accepts a scalar or a whole
+!> array; this replaced the two private copies in `optimize/driver.f90` and
+!> `saddle/prfo.f90`.
+elemental function landscape_real_is_finite(value) result(finite)
+   !> Value to test
+   real(wp), intent(in) :: value
+   !> True if the value is finite
+   logical :: finite
+
+   finite = ieee_is_finite(value)
+
+end function landscape_real_is_finite
 
 !> Reverse lookup of a minimisation algorithm identifier from its name.
 !>
@@ -1486,17 +1550,6 @@ function landscape_irc_method_from_name(name) result(method)
    end select
 
 end function landscape_irc_method_from_name
-
-!> True if `name` names one of the supported IRC integration methods.
-function landscape_irc_method_known(name) result(known)
-   !> Method name
-   character(len=*), intent(in) :: name
-   !> True if the name resolves to a method identifier
-   logical :: known
-
-   known = landscape_irc_method_from_name(name) /= 0
-
-end function landscape_irc_method_known
 
 !> Human readable name of a transition state search method identifier
 pure function landscape_ts_method_name(method) result(name)
@@ -1745,14 +1798,31 @@ function landscape_conv_level_known(level) result(known)
    !> True if the name sets at least one threshold
    logical :: known
 
-   select case (landscape_lowercase(level))
-   case ('superloose', 'loose', 'normal', 'tight', 'vtight')
-      known = .true.
-   case default
-      known = .false.
-   end select
+   known = landscape_conv_level_index(level) > 0
 
 end function landscape_conv_level_known
+
+!> Index of a convergence level name in `landscape_conv_level_names`.
+!>
+!> The index is 1-based and starts at `superloose`; 0 means the name is not a
+!> convergence level.  Every consumer of the level *set* reads this lookup, so
+!> the accepted names exist in exactly one place.
+pure function landscape_conv_level_index(level) result(index)
+   !> Level name
+   character(len=*), intent(in) :: level
+   !> 1-based position in `landscape_conv_level_names`, 0 for an unknown name
+   integer :: index
+   integer :: i
+
+   index = 0
+   do i = 1, landscape_conv_level_count
+      if (landscape_lowercase(level) == trim(landscape_conv_level_names(i))) then
+         index = i
+         return
+      end if
+   end do
+
+end function landscape_conv_level_index
 
 !> Human readable name of an engine restart policy identifier
 pure function landscape_restart_name(mode) result(name)

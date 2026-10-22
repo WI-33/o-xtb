@@ -15,6 +15,8 @@
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
 
+! Modified by the o-xtb landscape task suite, 2026.
+
 ! Modified Boryden mixer according to
 ! D.D. Johnson, PRB 38, 12807 (1988)
 ! Input Variables:
@@ -186,7 +188,10 @@ subroutine matinv(a, nrow)
    if(info .ne. 0)then
       write(*,*)"Error in Broyden matrix inversion!"
       write(*,*)"Error code",info
-      error stop
+      ! Message-less `error stop` with no code: state the failure and the
+      ! non-zero status explicitly.  `matinv` has no `TEnvironment`.
+      write(*,'(a)') "broyden: matrix inversion failed"
+      error stop 1
    endif
 
 

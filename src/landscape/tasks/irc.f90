@@ -62,7 +62,6 @@
 !> hartree/bohr, `etemp` in kelvin.
 module xtb_landscape_tasks_irc
    use xtb_mctc_accuracy, only : wp
-   use xtb_mctc_convert, only : autokcal
    use xtb_mctc_symbols, only : toSymbol
    use xtb_mctc_filetypes, only : fileType
    use xtb_io_writer, only : writeMolecule
@@ -75,7 +74,7 @@ module xtb_landscape_tasks_irc
       & landscape_opt_settings, landscape_engine_control, landscape_irc_method_name, &
       & landscape_restart_name, landscape_hessian_update_name, landscape_lowercase, &
       & p_landscape_irc_gs, p_landscape_irc_lqa, p_landscape_irc_hpc, &
-      & p_landscape_irc_eulerpc, landscape_log_failed
+      & p_landscape_irc_eulerpc, landscape_log_failed, landscape_int_to_string
    use xtb_landscape_results, only : landscape_result, landscape_irc_result, &
       & landscape_vib_result, p_landscape_irc_term_grad, &
       & p_landscape_irc_term_energy_rise, p_landscape_irc_term_limit_cycle, &
@@ -234,7 +233,8 @@ subroutine landscape_irc(env, mol, chk, calc, settings, result)
    ctrl%etemp = settings%etemp
    call new_landscape_engine(engine, ctrl)
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
-      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file)
+      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
+      & printlevel=settings%printlevel)
    if (.not. allocated(hp)) then
       result%message = "IRC failed"
       call engine%destroy()
@@ -655,7 +655,7 @@ subroutine confirm_ts(env, mol, hess, settings, result)
             & "not a transition state"
       else
          result%message = "the input geometry is a higher order saddle ("//&
-            & trim(int_to_string(vib%n_imag))//" imaginary modes), not a "//&
+            & trim(landscape_int_to_string(vib%n_imag))//" imaginary modes), not a "//&
             & "first order saddle point"
       end if
       call env%error(trim(result%message), source)
@@ -1188,20 +1188,6 @@ pure function arc_length_definition(method) result(text)
    end select
 
 end function arc_length_definition
-
-!> Decimal representation of an integer for a message.
-pure function int_to_string(value) result(string)
-   !> Value to convert
-   integer, intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=16) :: buffer
-
-   write(buffer, '(i0)') value
-   string = trim(buffer)
-
-end function int_to_string
 
 !> Why the finite difference parameters of the numerical Hessian are not used.
 !>

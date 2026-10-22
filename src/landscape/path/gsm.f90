@@ -87,7 +87,7 @@ module xtb_landscape_path_gsm
    use xtb_mctc_accuracy, only : wp
    use xtb_mctc_convert, only : autokcal
    use xtb_type_environment, only : TEnvironment
-   use xtb_landscape_settings, only : landscape_path_settings
+   use xtb_landscape_settings, only : landscape_path_settings, landscape_int_to_string
    use xtb_landscape_engine, only : landscape_energy_model
    use xtb_landscape_coords, only : geometry_pack, align_geometry
    use xtb_landscape_lbfgs, only : landscape_lbfgs_type, new_landscape_lbfgs
@@ -353,8 +353,8 @@ subroutine landscape_string_grow(env, model, settings, reactant, product, nodes,
          & product, new_index, spacing, fail, string)
       if (fail) then
          call env%error("the string stopped growing at node "//&
-            & trim(int_to_string(n_placed + 1))//" of the budget "//&
-            & trim(int_to_string(budget)), source)
+            & trim(landscape_int_to_string(n_placed + 1))//" of the budget "//&
+            & trim(landscape_int_to_string(budget)), source)
          string%message = "the string growth stalled"
          return
       end if
@@ -401,7 +401,7 @@ subroutine landscape_string_grow(env, model, settings, reactant, product, nodes,
       if (gap > 0.9_wp*initial_gap) then
          call env%error("the string made no progress towards the product: the "//&
             & "remaining distance is "//trim(number_string(gap))//" bohr after "//&
-            & trim(int_to_string(n_placed))//" nodes with a spacing of "//&
+            & trim(landscape_int_to_string(n_placed))//" nodes with a spacing of "//&
             & trim(number_string(spacing))//" bohr; raise --lts-string-nnodes "//&
             & "or --lts-string-ds", source)
          string%message = "the string made no progress towards the product"
@@ -1091,26 +1091,6 @@ subroutine landscape_string_report(env, string)
 
 end subroutine landscape_string_report
 
-!> Arc length of the node chain `first .. last` (bohr).
-pure function chain_arc_length(nodes, first, last) result(length)
-   !> String nodes `(3, nat, n_nodes)`
-   real(wp), intent(in) :: nodes(:, :, :)
-   !> First node of the chain
-   integer, intent(in) :: first
-   !> Last node of the chain
-   integer, intent(in) :: last
-   !> Length of the chain (bohr)
-   real(wp) :: length
-
-   integer :: k
-
-   length = 0.0_wp
-   do k = first + 1, last
-      length = length + sqrt(sum((nodes(:, :, k) - nodes(:, :, k - 1))**2))
-   end do
-
-end function chain_arc_length
-
 !> Decimal representation of a real for a message.
 pure function number_string(value) result(text)
    !> Value
@@ -1352,19 +1332,5 @@ pure subroutine normalize(vector)
    end if
 
 end subroutine normalize
-
-!> Decimal representation of an integer for a message.
-pure function int_to_string(value) result(text)
-   !> Value to convert
-   integer, intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: text
-
-   character(len=16) :: buffer
-
-   write(buffer, '(i0)') value
-   text = trim(buffer)
-
-end function int_to_string
 
 end module xtb_landscape_path_gsm

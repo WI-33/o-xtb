@@ -17,8 +17,11 @@
 
 !> Unit tests of the landscape settings and the four-criterion convergence test.
 module test_landscape_settings
+   use, intrinsic :: ieee_arithmetic, only : ieee_value, ieee_quiet_nan, &
+      & ieee_positive_inf
    use testdrive, only : new_unittest, unittest_type, error_type, check
    use xtb_mctc_accuracy, only : wp
+   use xtb_mctc_convert, only : aatoau
    use xtb_landscape_settings
    implicit none
    private
@@ -44,6 +47,8 @@ subroutine collect_landscape_settings(testsuite)
       new_unittest("algorithm-lookup", test_algorithm_lookup), &
       new_unittest("level-lookup", test_level_lookup), &
       new_unittest("enum-case", test_enum_case), &
+      new_unittest("level-list", test_level_list), &
+      new_unittest("number-strings", test_number_strings), &
       new_unittest("restart-names", test_restart_names) &
       ]
 
@@ -108,9 +113,9 @@ subroutine test_defaults_opt(error)
    if (allocated(error)) return
    call check(error, set%trust_radius, 3.7795e-1_wp)
    if (allocated(error)) return
-   call check(error, set%trust_min, 1.8897e-3_wp)
+   call check(error, set%trust_min, 1.0e-3_wp*aatoau)
    if (allocated(error)) return
-   call check(error, set%trust_max, 1.8897_wp)
+   call check(error, set%trust_max, 1.0_wp*aatoau)
    if (allocated(error)) return
    call check(error, set%curvature, 70.0_wp)
    if (allocated(error)) return
@@ -508,6 +513,107 @@ subroutine test_enum_case(error)
    call check(error, upper%max_steps_multiplier, lower%max_steps_multiplier)
 
 end subroutine test_enum_case
+
+!> The accepted convergence levels exist in one list.
+!>
+!> The set used to be spelled three times (the `select case` of
+!> `landscape_settings_set_conv_level`, `landscape_conv_level_known` and the
+!> `v_level` table of `src/xhelp.f90`).  The first two read
+!> `landscape_conv_level_names` now and the threshold tables of the setter are
+!> declared with `landscape_conv_level_count`, so a level added to the list
+!> without a threshold row does not compile; `src/xhelp.f90` is a pre-existing
+!> file that may not `use` the suite and stays on its own `v_level` table,
+!> which `xtb/landscape-help-values` ties to the binary's acceptance.  This case
+!> pins the list itself: the order documented in
+!> `landscape_conv_level_index`, the count and the lookup.
+subroutine test_level_list(error)
+   type(error_type), allocatable, intent(out) :: error
+   type(landscape_opt_settings) :: level
+   integer :: i
+
+   call check(error, landscape_conv_level_count, 5)
+   if (allocated(error)) return
+   call check(error, trim(landscape_conv_level_names(1)), "superloose")
+   if (allocated(error)) return
+   call check(error, trim(landscape_conv_level_names(3)), "normal")
+   if (allocated(error)) return
+   call check(error, trim(landscape_conv_level_names(5)), "vtight")
+   if (allocated(error)) return
+
+   ! every listed name is known, resolves to its own index and sets thresholds
+   do i = 1, landscape_conv_level_count
+      call check(error, landscape_conv_level_known(landscape_conv_level_names(i)))
+      if (allocated(error)) return
+      call check(error, landscape_conv_level_index(landscape_conv_level_names(i)), i)
+      if (allocated(error)) return
+      ! the setter really overwrites every axis: a sentinel value that no
+      ! level carries stays only if the name missed its threshold row
+      level%g_max = -1.0_wp
+      level%g_rms = -1.0_wp
+      level%d_max = -1.0_wp
+      level%d_rms = -1.0_wp
+      level%e_tol = -1.0_wp
+      level%engine%acc = -1.0_wp
+      level%max_steps_multiplier = -1
+      call level%set_conv_level(landscape_conv_level_names(i))
+      call check(error, min(level%g_max, level%g_rms, level%d_max, &
+         & level%d_rms, level%e_tol, level%engine%acc, &
+         & real(level%max_steps_multiplier, wp)) > 0.0_wp)
+      if (allocated(error)) return
+   end do
+
+   ! and nothing else
+   call check(error, landscape_conv_level_index("medium"), 0)
+   if (allocated(error)) return
+   call check(error, .not. landscape_conv_level_known("extreme"))
+
+end subroutine test_level_list
+
+!> The two shared number formatters, byte for byte.
+!>
+!> `landscape_real_to_string` takes the edit descriptor as an argument because
+!> the five copies it replaced used three different ones: `es15.6` in the three
+!> scan modules, `es16.8` in the Hessian reader and `f0.4` in the mode
+!> follower.  The reference strings are written here with the bare format, so a
+!> changed default or a changed `trim` shows up.
+subroutine test_number_strings(error)
+   type(error_type), allocatable, intent(out) :: error
+   real(wp), parameter :: x = 1.23456789e-3_wp
+   character(len=32) :: buffer
+   real(wp) :: nan, inf
+
+   call check(error, landscape_int_to_string(0), "0")
+   if (allocated(error)) return
+   call check(error, landscape_int_to_string(42), "42")
+   if (allocated(error)) return
+   call check(error, landscape_int_to_string(-7), "-7")
+   if (allocated(error)) return
+
+   write(buffer, '(es15.6)') x
+   call check(error, landscape_real_to_string(x, '(es15.6)'), trim(buffer))
+   if (allocated(error)) return
+   write(buffer, '(es16.8)') x
+   call check(error, landscape_real_to_string(x, '(es16.8)'), trim(buffer))
+   if (allocated(error)) return
+   write(buffer, '(f0.4)') x
+   call check(error, landscape_real_to_string(x, '(f0.4)'), trim(buffer))
+   if (allocated(error)) return
+
+   ! `abs(x) <= huge` would raise `invalid` on a NaN in a checked build;
+   ! `ieee_is_finite` does not.
+   nan = ieee_value(0.0_wp, ieee_quiet_nan)
+   inf = ieee_value(0.0_wp, ieee_positive_inf)
+   call check(error, landscape_real_is_finite(x))
+   if (allocated(error)) return
+   call check(error, .not. landscape_real_is_finite(nan))
+   if (allocated(error)) return
+   call check(error, .not. landscape_real_is_finite(inf))
+   if (allocated(error)) return
+   call check(error, all(landscape_real_is_finite([1.0_wp, -2.0_wp])))
+   if (allocated(error)) return
+   call check(error, .not. any(landscape_real_is_finite([inf, nan])))
+
+end subroutine test_number_strings
 
 !> Human readable names of the engine restart policies
 subroutine test_restart_names(error)

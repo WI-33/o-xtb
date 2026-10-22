@@ -15,6 +15,8 @@
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
 
+! Modified by the o-xtb landscape task suite, 2026.
+
 module xtb_dynamic
    use xtb_io_writer, only : writeMolecule
    use xtb_mctc_accuracy, only : wp
@@ -644,7 +646,13 @@ subroutine md(env,mol,chk,calc, &
             endif
             if(abs(tors(j)-intgeo(3,j)).gt.pi) then  ! still in error
                write(*,*) j,tors(j),intgeo(3,j)
-               stop 'error in md/zmat'
+               ! A bare `stop 'message'` returns exit status 0 from a fatal
+               ! path; the diagnostic goes through `env`, whose checkpoint
+               ! terminates with status 1.
+               call env%error("the torsion of the internal coordinate "//&
+                  & "average stayed outside (-pi, pi] after four wraps", &
+                  & "dynamic_md")
+               call env%checkpoint("MD with a z-matrix failed")
             endif
          enddo
          tors(1:mol%n)=intgeo(3,1:mol%n)

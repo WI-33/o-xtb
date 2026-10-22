@@ -54,10 +54,8 @@ module xtb_landscape_scan1d
    use xtb_mctc_convert, only : autoaa
    use xtb_type_environment, only : TEnvironment
    use xtb_landscape_settings, only : landscape_scan_settings, &
-      & landscape_scan_coord_settings, &
-      & p_landscape_scan_coord_angle, p_landscape_scan_coord_dihedral, &
-      & p_landscape_scan_coord_distance, landscape_missing_value, &
-      & landscape_lowercase
+      & landscape_scan_coord_settings, p_landscape_scan_coord_distance, &
+      & landscape_missing_value, landscape_lowercase, landscape_real_to_string
    use xtb_landscape_engine, only : landscape_energy_model
    use xtb_landscape_coords, only : geometry_unpack
    use xtb_landscape_scan_relax, only : landscape_scan_point, &
@@ -280,7 +278,7 @@ subroutine landscape_scan1d(env, base, at, settings, x0, profile, fail)
 
    if (profile%hysteresis%max_jump > scan_jump_warning) then
       call env%warning("the scan profile jumps by "//&
-         & trim(real_to_string(profile%hysteresis%max_jump))//&
+         & trim(landscape_real_to_string(profile%hysteresis%max_jump, '(es15.6)'))//&
          & " hartree between two consecutive points; this indicates a basin "//&
          & "switch or a SCF discontinuity", source)
    end if
@@ -460,19 +458,5 @@ subroutine landscape_scan_profile_write(profile, unit, coord_type)
       & profile%hysteresis%max_jump, " Eh"
 
 end subroutine landscape_scan_profile_write
-
-!> Decimal representation of a real number for a warning message.
-function real_to_string(value) result(string)
-   !> Value to convert
-   real(wp), intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=32) :: buffer
-
-   write(buffer, '(es15.6)') value
-   string = trim(buffer)
-
-end function real_to_string
 
 end module xtb_landscape_scan1d

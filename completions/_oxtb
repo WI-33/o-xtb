@@ -46,6 +46,7 @@ _oxtb()
         '--lopt-level[convergence level of the minimisation]:values:(superloose loose normal tight vtight)'
         '--lopt-hessian[Hessian backend\: numerical, model or file]:values:(numerical model file)'
         '--lopt-max-steps[step budget of the minimisation]:argument:'
+        '--lopt-recalc[rebuild the exact Hessian every N RFO steps]:argument:'
         '--lopt-hess-step[FD step of the numerical Hessian (bohr)]:argument:'
         '--lopt-sccacc[SCC accuracy of the FD Hessian points]:argument:'
         '--lopt-restart[wavefunction restart policy\: off, pin or warm]:values:(off pin warm)'

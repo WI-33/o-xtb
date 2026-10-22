@@ -15,6 +15,8 @@
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
 
+! Modified by the o-xtb landscape task suite, 2026.
+
 !> Wilson B rows for internal coordinates and Cartesian Hessian accumulation
 !> helpers shared by internal-coordinate sets and the model Hessians.
 module xtb_bmatrix
@@ -351,6 +353,13 @@ pure subroutine get_bmatrix(internals, xyz, bmat)
          ncoord = 4
          brow = reshape(bmat_torsion(xyz(:, internals%atoms(:, ic))), [12])
       case default
+         ! `get_bmatrix` is `pure` and has no `TEnvironment`, so `env%error`
+         ! is out of reach; `error stop` is the honest minimum here - it
+         ! terminates with a non-zero status, unlike a bare `stop`, whose
+         ! numeric or character stop code still exits 0.  A message cannot be
+         ! attached to a code (`error stop 1, "..."` is Fortran 2018 and this
+         ! compiler rejects it) and a `pure` procedure may write only to an
+         ! internal file, so the message is the `error stop` stop-code.
          error stop "bmatrix: unknown internal coordinate kind"
       end select
 

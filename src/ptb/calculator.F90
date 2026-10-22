@@ -15,6 +15,8 @@
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
 
+! Modified by the o-xtb landscape task suite, 2026.
+
 #ifndef WITH_TBLITE
 #define WITH_TBLITE 0
 #endif
@@ -378,7 +380,7 @@ contains
       type(TEnvironment), intent(inout) :: env
 
       call env%error("PTB not available without 'tblite'. Compiled without support for 'tblite' library.")
-      call env%error("Please recompile without '-Dtblite=disabled' option or change meson setup.")
+      call env%error("Rebuild with the CMake option -DWITH_TBLITE=ON to use it.")
    end subroutine feature_not_implemented
 #endif
 end module xtb_ptb_calculator

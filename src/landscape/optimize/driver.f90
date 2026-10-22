@@ -39,13 +39,11 @@ module xtb_landscape_optimize
    use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
    use xtb_mctc_accuracy, only : wp
    use xtb_type_environment, only : TEnvironment
-   use xtb_landscape_settings, only : landscape_value_present, &
-      & landscape_opt_settings, &
+   use xtb_landscape_settings, only : landscape_value_present, landscape_opt_settings, &
       & p_landscape_opt_sd, p_landscape_opt_cg, p_landscape_opt_lbfgs, &
-      & p_landscape_opt_bfgs, &
-      & p_landscape_opt_diis, p_landscape_opt_rfo, &
+      & p_landscape_opt_bfgs, p_landscape_opt_diis, p_landscape_opt_rfo, &
       & landscape_opt_algorithm_name, landscape_convergence_measures, &
-      & landscape_lowercase
+      & landscape_lowercase, landscape_real_is_finite
    use xtb_landscape_results, only : landscape_result, landscape_step, &
       & landscape_result_add_step, landscape_result_trim, landscape_report_add, &
       & landscape_print_step
@@ -159,7 +157,7 @@ subroutine landscape_optimize_model(env, objective, settings, x0, result, &
 
    ! A non-finite starting geometry poisons every downstream comparison (the
    ! line search would silently reject every trial); reject it explicitly.
-   if (.not. all(real_is_finite(x))) then
+   if (.not. all(landscape_real_is_finite(x))) then
       result%message = "initial coordinates are not finite"
       return
    end if
@@ -171,7 +169,7 @@ subroutine landscape_optimize_model(env, objective, settings, x0, result, &
       call finish()
       return
    end if
-   if (.not. real_is_finite(energy) .or. .not. all(real_is_finite(g))) then
+   if (.not. landscape_real_is_finite(energy) .or. .not. all(landscape_real_is_finite(g))) then
       result%message = "initial energy or gradient is not finite"
       call finish()
       return
@@ -616,21 +614,5 @@ subroutine reset_result(result)
    result%conv%converged = .false.
 
 end subroutine reset_result
-
-!> True if the value is finite, i.e. neither NaN nor +/- Inf.
-!>
-!> `ieee_is_finite` reads the representation, so, unlike `abs(x) <= huge`,
-!> it does not raise the invalid exception when `x` is a NaN - a checked
-!> build (`-ffpe-trap=invalid`) aborts on that comparison, and this predicate
-!> exists to guard exactly that case.
-elemental function real_is_finite(x) result(ok)
-   !> Value to test
-   real(wp), intent(in) :: x
-   !> True if the value is finite
-   logical :: ok
-
-   ok = ieee_is_finite(x)
-
-end function real_is_finite
 
 end module xtb_landscape_optimize

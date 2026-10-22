@@ -51,6 +51,7 @@
 !> 1-based.  Flattened vectors follow the `x1, y1, z1, x2, ...` convention of
 !> `xtb_landscape_coords`.
 module xtb_landscape_scan_relax
+   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
    use xtb_mctc_accuracy, only : wp
    use xtb_mctc_constants, only : pi
    use xtb_mctc_param, only : covalent_radius_2009
@@ -64,7 +65,8 @@ module xtb_landscape_scan_relax
       & p_landscape_scan_coord_dihedral, landscape_scan_coord_known, &
       & landscape_scan_coord_natoms, landscape_scan_coord_name, &
       & landscape_scan_mode_known, landscape_opt_algorithm_from_name, &
-      & landscape_lowercase, landscape_missing_value, landscape_value_present
+      & landscape_lowercase, landscape_missing_value, landscape_value_present, &
+      & landscape_real_to_string
    use xtb_landscape_engine, only : landscape_energy_model
    use xtb_landscape_coords, only : geometry_pack, geometry_unpack
    use xtb_landscape_optimize, only : landscape_optimize_model
@@ -473,7 +475,7 @@ function landscape_scan_check(env, settings, nat) result(ok)
    logical :: ok
 
    integer :: i, j, natoms, iatom
-   character(len=32) :: buffer
+   character(len=160) :: buffer
    character(len=8) :: step_unit
    character(len=:), allocatable :: cname, flag_suffix, atom_list
 
@@ -501,6 +503,17 @@ function landscape_scan_check(env, settings, nat) result(ok)
       if (landscape_opt_algorithm_from_name(settings%method) == 0) then
          call env%error("unknown inner minimiser '"//trim(settings%method)//&
             & "' for a relaxed scan", source)
+         ok = .false.
+         return
+      end if
+      ! A non-finite value reaches this comparison unchecked (`nan <= 0` is
+      ! false), and it then poisons every biased energy of the scan: the CLI
+      ! parser accepts `nan`/`inf` for `--lscan-fc`, so the guard has to name
+      ! the value instead of letting the run produce a NaN profile.
+      if (.not. ieee_is_finite(settings%constraint_fc)) then
+         write(buffer, '(a,es15.6,a)') "--lscan-fc ", settings%constraint_fc, &
+            & " is not a finite force constant"
+         call env%error(trim(buffer), source)
          ok = .false.
          return
       end if
@@ -811,13 +824,13 @@ subroutine landscape_scan_rigid_point(env, base, coords, targets, ncoord, at, &
       if (abs(drift) <= rigid_drift_tol) cycle
       if (ncoord > 1) then
          call env%warning("rigid scan coordinate "//one_digit(i)//&
-            & " missed its target by "//trim(real_to_string(drift))//&
+            & " missed its target by "//trim(landscape_real_to_string(drift, '(es15.6)'))//&
             & "; the second rigid operation disturbed the first one", &
             & source)
          cycle
       end if
       call env%error("a rigid scan point missed its target by "//&
-         & trim(real_to_string(drift))//" (bohr or radian): the moving "//&
+         & trim(landscape_real_to_string(drift, '(es15.6)'))//" (bohr or radian): the moving "//&
          & "fragment did not separate the two sides of the molecule", &
          & source)
       fail = .true.
@@ -1143,19 +1156,5 @@ function nat_to_string(value) result(string)
    string = trim(buffer)
 
 end function nat_to_string
-
-!> Decimal representation of a real number for error and warning messages.
-function real_to_string(value) result(string)
-   !> Value to convert
-   real(wp), intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=32) :: buffer
-
-   write(buffer, '(es15.6)') value
-   string = trim(buffer)
-
-end function real_to_string
 
 end module xtb_landscape_scan_relax

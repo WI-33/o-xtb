@@ -60,16 +60,16 @@
 !> the **image separation** `2*delta`: that is exactly the ambiguity of PLAN
 !> section 5.3.6, where VASP's `DdR` denotes twice the image-to-midpoint
 !> distance while `delta` here denotes the centre-to-image distance
-!> (pysisyphus convention, `1.8897e-2` bohr = `1e-2` Angstrom).  This module
-!> uses the force form with the centre-to-image `delta`, so the same `delta`
-!> also sets the denominator `2*delta` and the displacement `+/- delta*N` of
-!> the two images.
+!> (pysisyphus convention, `1.0e-2_wp*aatoau` bohr = `1e-2` Angstrom).  This
+!> module uses the force form with the centre-to-image `delta`, so the same
+!> `delta` also sets the denominator `2*delta` and the displacement `+/-`
+!> `delta*N` of the two images.
 !>
 !> **Sign resolution** (M4 hard constraint 2).  `C` is a difference of two
 !> forces divided by `2*delta`: with the force noise of a cold SCC start
 !> (`sigma_F ~ 1e-9` hartree/bohr, the cold-start SCC gradient noise) and the
-!> default `delta = 1.8897e-2` bohr the statistical error of the curvature is
-!> `sqrt(2) sigma_F/(2 delta) ~ 4e-8` hartree/bohr^2.  That is five orders of
+!> default `delta = 1.0e-2_wp*aatoau` bohr the statistical error of the curvature
+!> is `sqrt(2) sigma_F/(2 delta) ~ 4e-8` hartree/bohr^2.  That is five orders of
 !> magnitude below the 3 cm^-1 band (about `1e-4` hartree/bohr^2) quoted by
 !> M4 hard constraint 2, so the branch decision is not noise limited for any
 !> mode outside that band; a mode *inside* the band is below the resolution of
@@ -98,8 +98,8 @@
 !> a gradient field - its parallel part ascends while its perpendicular part
 !> descends - so `kappa = u^T H u` changes sign near the transition state and
 !> `|F^dagger|/kappa` stops shrinking.  Measured on Mueller-Brown (delta =
-!> 1.8897e-2 bohr): from `(-0.6, 0.4)` the Newton form keeps taking the
-!> maximal step near the saddle and orbits it forever (200 steps, distance to
+!> `1.0e-2_wp*aatoau` bohr): from `(-0.6, 0.4)` the Newton form keeps taking
+!> the maximal step near the saddle and orbits it forever (200 steps, distance
 !> the saddle alternating between 0.036 and 0.015, `kappa` between -1.20 and
 !> -0.96), while the force proportional form below converges in 23 steps to
 !> 1.4e-4 bohr of the saddle.  The mobility limiter `1/kappa` did not bind in

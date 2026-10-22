@@ -18,6 +18,7 @@
 ! Modified by the o-xtb landscape task suite, 2026.
 
 module xtb_prog_main
+   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
    use xtb_mctc_accuracy, only: wp
    use xtb_mctc_constants, only: pi
    use xtb_mctc_io, only: stderr
@@ -1923,6 +1924,25 @@ contains
       !> reported in the parser tail, where `nproc` is known
       integer :: landscape_parallel_team
 
+      !> Raw value of an `-a`/`--acc` argument that is not a finite number
+      !> (`nan`, `inf`); unallocated when the value is usable.  It is reported
+      !> in the parser tail, where the effect of `--strict` is known - the same
+      !> lax/strict shape as the `-P` value below - and the value is **not**
+      !> applied, because an SCC accuracy of NaN turns every energy of the run
+      !> into NaN instead of failing.
+      character(len=:), allocatable :: landscape_acc_value
+
+      !> `--lopt-recalc N` was given, and the value it carried.  The report of a
+      !> negative value happens in the parser tail, where the effect of
+      !> `--strict` is known - the same lax/strict shape as the `-P` value
+      !> above - so the value has to survive the flag loop.
+      logical :: lopt_recalc_given
+      integer :: lopt_recalc_value
+
+      !> Report text of the `--lopt-recalc` value diagnostic (the internal
+      !> write needs a fixed length buffer, like `parallel_note`)
+      character(len=128) :: recalc_note
+
       !> Report text of the `-P` over-subscription warning (the internal write
       !> needs a fixed length buffer; `message` is allocatable and cannot be
       !> written to before it is allocated)
@@ -1985,6 +2005,8 @@ contains
       lts_max_steps_given = .false.
       lirc_max_steps_given = .false.
       acc_was_set = .false.
+      lopt_recalc_given = .false.
+      lopt_recalc_value = 0
       landscape_parallel_team = 0
       nproc = 0
 
@@ -2149,7 +2171,14 @@ contains
             call args%nextArg(sec)
             if (allocated(sec)) then
                if (getValue(env, sec, ddum)) then
-                  if (ddum < 1.e-4_wp) then
+                  if (.not. ieee_is_finite(ddum)) then
+                     ! `read(sec,*,iostat=)` parses `nan`/`inf`; a NaN
+                     ! accuracy used to be stored and every SCC energy of the
+                     ! run silently became NaN.  Reported in the parser tail
+                     ! (below) and not applied, so the default of the level or
+                     ! of `set%acc` stays in force.
+                     landscape_acc_value = sec
+                  else if (ddum < 1.e-4_wp) then
                      call env%warning("We cannot provide this level of accuracy, "//&
                         & "resetted accuracy to 0.0001", source)
                      set%acc = 1.e-4_wp
@@ -2160,10 +2189,11 @@ contains
                   else
                      set%acc = ddum
                   end if
-                  ! The value was named on the command line, so it wins over
-                  ! the one a landscape convergence level derives for the
-                  ! engine of the suite run (CLI redesign section 3.5, R5).
-                  acc_was_set = .true.
+                  ! A rejected value does not count as "named on the command
+                  ! line", so the accuracy derived from the convergence level
+                  ! stays in force; an accepted one wins over it (CLI redesign
+                  ! section 3.5, R5).
+                  if (.not. allocated(landscape_acc_value)) acc_was_set = .true.
                end if
                tblite%accuracy = set%acc
             else
@@ -2859,6 +2889,29 @@ contains
                end if
             else
                call env%error("The --lopt-max-steps flag requires an integer", source)
+            end if
+
+         case ('--lopt-recalc')
+            ! Hessian rebuild interval of the RFO step.  The field existed
+            ! with a fixed default of 5 and no flag reached it; the saddle
+            ! (`--lts-recalc`) and reaction path (`--lirc-recalc`) spellings
+            ! are the same knob of their own settings object.  `0` disables
+            ! the rebuild and an interval above the step budget simply never
+            ! fires; a negative value is reported in the tail, where the
+            ! effect of `--strict` is known.
+            call select_runtyp(env, 'lopt', '--lopt-recalc', selected_runtyp, selected_runtyp_flag)
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec, *, iostat=idum) idum2
+               if (idum == 0) then
+                  lset%recalc = idum2
+                  lopt_recalc_value = idum2
+                  lopt_recalc_given = .true.
+               else
+                  call env%error("The --lopt-recalc flag requires an integer", source)
+               end if
+            else
+               call env%error("The --lopt-recalc flag requires an integer", source)
             end if
 
          case ('--lopt-hess-step')
@@ -4692,6 +4745,42 @@ contains
          call env%warning(trim(parallel_note), source)
       end if
 
+      ! `--lopt-recalc N` rebuilds the exact Hessian every N RFO steps, `0`
+      ! disables the rebuild.  A negative value would not be a second spelling
+      ! of "never": the step loop tests `recalc >= 1`, so it would degrade to 0
+      ! without a word.  It is reported here - the decision needs the effect of
+      ! `--strict`, which may stand after the flag - and the value is applied as
+      ! given (the run rebuilds no Hessian), exactly like the `-P` value above
+      ! rather than being silently clamped.
+      if (lopt_recalc_given .and. lopt_recalc_value < 0) then
+         write(recalc_note, '(a,i0,a)') "--lopt-recalc needs 0 (no rebuild) "//&
+            & "or a positive number of steps, not ", lopt_recalc_value, &
+            & "; the run rebuilds no Hessian"
+         if (strict) then
+            call env%error(trim(recalc_note), source)
+         else
+            call env%warning(trim(recalc_note), source)
+         end if
+      end if
+
+      ! The value of `-a`/`--acc`.  `read(sec,*,iostat=)` accepts `nan` and
+      ! `inf`, and the range check of the flag compares against both limits,
+      ! so a non-finite value used to be stored as the SCC accuracy: every
+      ! energy of the run became NaN without a diagnostic and the process
+      ! still exited 0.  The value is reported here - the decision needs the
+      ! effect of `--strict`, which may stand after the flag - and it is not
+      ! applied, so the run continues with the default (or the level derived)
+      ! accuracy.
+      if (allocated(landscape_acc_value)) then
+         message = "-a/--acc needs a finite accuracy, not '"//&
+            & landscape_acc_value//"'; the value is ignored"
+         if (strict) then
+            call env%error(message, source)
+         else
+            call env%warning(message, source)
+         end if
+      end if
+
       ! The native level value of `--bhess`/`--metaopt` reaches
       ! `set%optset%optlev` through the shared `optlevel2int`
       ! (`src/set_module.f90`), which maps a keyword it does not know to
@@ -5924,7 +6013,6 @@ subroutine set_landscape_irc_algorithm(env, settings, name, owner, source)
    end if
    settings%method = method
    settings%method_source = owner
-   settings%method_was_set = .true.
 
 end subroutine set_landscape_irc_algorithm
 
@@ -6124,7 +6212,7 @@ end subroutine set_landscape_hess_step
       type(TEnvironment), intent(inout) :: env
 
       call env%error("PTB not available without 'tblite'. Compiled without support for 'tblite' library.")
-      call env%error("Please recompile without '-Dtblite=disabled' option or change meson setup.")
+      call env%error("Rebuild with the CMake option -DWITH_TBLITE=ON to use it.")
    end subroutine ptb_feature_not_implemented
 
    !>  make some post processing afterward, show some timings and stuff

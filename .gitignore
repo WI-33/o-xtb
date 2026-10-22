@@ -55,6 +55,8 @@ wbo
 charges
 dftd4_gradient
 .tmpxtbmodef
+.xtboptok
+NOT_CONVERGED
 hessian
 molden.input
 tmpxx
@@ -69,6 +71,8 @@ xtbtopo.mol
 vibspectrum
 vib_normal_modes
 xtbscan.log
+xtblast.xyz
+xtbhess.*
 irc.log
 irc_*.xyz
 landscape_*.json

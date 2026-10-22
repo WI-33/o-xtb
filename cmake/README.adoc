@@ -1,7 +1,7 @@
 = Building xtb with CMake
 
 To build `xtb` from the source in this repository the https://cmake.org/[CMake build system] can be employed.
-The build files used require a CMake verson version of >= 3.9 or newer.
+The build files used require CMake >= 3.17 or newer (`CMakeLists.txt`, `cmake_minimum_required`).
 We highly recommend to use CMake together with the https://ninja-build.org/[ninja] (version 1.10 required), but the default make build will work as well.
 
 == Getting CMake

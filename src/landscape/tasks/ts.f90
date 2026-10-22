@@ -81,9 +81,9 @@ module xtb_landscape_tasks_ts
    use xtb_landscape_settings, only : landscape_ts_settings, landscape_vib_settings, &
       & landscape_opt_settings, landscape_engine_control, landscape_restart_name, &
       & landscape_ts_method_name, p_landscape_ts_prfo, p_landscape_ts_bprfo, &
-      & p_landscape_ts_dimer, p_landscape_ts_neb, &
-      & p_landscape_ts_cineb, p_landscape_ts_autoneb, landscape_ts_method_is_band, &
-      & landscape_ts_method_is_string, landscape_log_failed, landscape_lowercase
+      & p_landscape_ts_dimer, p_landscape_ts_cineb, p_landscape_ts_autoneb, &
+      & landscape_ts_method_is_band, landscape_ts_method_is_string, landscape_log_failed, &
+      & landscape_lowercase, landscape_int_to_string
    use xtb_landscape_results, only : landscape_result, landscape_vib_result
    use xtb_landscape_coords, only : geometry_pack, geometry_unpack, angstrom_to_bohr
    use xtb_landscape_engine, only : landscape_engine, new_landscape_engine, &
@@ -275,7 +275,8 @@ subroutine landscape_ts(env, mol, chk, calc, settings, result)
    ctrl%etemp = settings%etemp
    call new_landscape_engine(engine, ctrl)
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
-      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file)
+      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
+      & printlevel=settings%printlevel)
    if (.not. allocated(hp)) then
       result%message = "transition state search failed"
       call engine%destroy()
@@ -552,7 +553,7 @@ subroutine confirm_saddle(env, mol, chk, engine, settings, result)
             & "imaginary modes), not a first order saddle point"
       else
          result%message = "the located stationary point is a higher order "//&
-            & "saddle ("//trim(int_to_string(result%n_imag))//& 
+            & "saddle ("//trim(landscape_int_to_string(result%n_imag))//& 
             & " imaginary modes), not a first order saddle point"
       end if
       call env%warning(trim(result%message), 'landscape_ts')
@@ -732,20 +733,6 @@ subroutine write_ts_files(env, mol, settings, result)
    write(env%unit, '(1x,a,a)') "wrote ", logname
 
 end subroutine write_ts_files
-
-!> Decimal representation of an integer for a message.
-pure function int_to_string(value) result(string)
-   !> Value to convert
-   integer, intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=16) :: buffer
-
-   write(buffer, '(i0)') value
-   string = trim(buffer)
-
-end function int_to_string
 
 !> Chain-of-states branch of the transition state search.
 !>
@@ -1093,7 +1080,7 @@ subroutine read_band_product(env, mol, settings, product, fail)
 
    if (.not. allocated(settings%path%product_file)) then
       if (ninput > 1) then
-         call env%error("the input holds "//int_to_string(ninput)//&
+         call env%error("the input holds "//landscape_int_to_string(ninput)//&
             & " frames; pass the product with --lts-product", source)
       else
          call env%error("a band search needs a product geometry; pass it "//&
@@ -1103,7 +1090,7 @@ subroutine read_band_product(env, mol, settings, product, fail)
    end if
 
    if (ninput > 1) then
-      call env%error("the input holds "//int_to_string(ninput)//" frames "//&
+      call env%error("the input holds "//landscape_int_to_string(ninput)//" frames "//&
          & "and --lts-product was given as well; the two endpoints are "//&
          & "ambiguous", source)
       return
@@ -1122,7 +1109,7 @@ subroutine read_band_product(env, mol, settings, product, fail)
    end if
    if (nframes /= 1) then
       call env%error("the product geometry '"//fname//"' holds "//&
-         & int_to_string(nframes)//" frames; exactly one is required", source)
+         & landscape_int_to_string(nframes)//" frames; exactly one is required", source)
       return
    end if
 
@@ -1142,8 +1129,8 @@ subroutine read_band_product(env, mol, settings, product, fail)
       return
    end if
    if (prodmol%n /= mol%n) then
-      call env%error("the product geometry has "//int_to_string(prodmol%n)//&
-         & " atoms but the reactant has "//int_to_string(mol%n), source)
+      call env%error("the product geometry has "//landscape_int_to_string(prodmol%n)//&
+         & " atoms but the reactant has "//landscape_int_to_string(mol%n), source)
       return
    end if
    first = 0
@@ -1152,7 +1139,7 @@ subroutine read_band_product(env, mol, settings, product, fail)
    end do
    if (first /= 0) then
       call env%error("the atom order of the product geometry differs from "//&
-         & "the reactant (first mismatch at atom "//int_to_string(first)//")", source)
+         & "the reactant (first mismatch at atom "//landscape_int_to_string(first)//")", source)
       return
    end if
 

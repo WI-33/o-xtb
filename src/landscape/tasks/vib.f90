@@ -55,7 +55,7 @@ module xtb_landscape_tasks_vib
    use xtb_setparam, only : get_namespace
    use xtb_io_writer_turbomole, only : writeNormalModesTurbomole
    use xtb_landscape_settings, only : landscape_vib_settings, landscape_restart_name, &
-      & landscape_log_failed, landscape_lowercase
+      & landscape_log_failed, landscape_lowercase, landscape_int_to_string
    use xtb_landscape_results, only : landscape_result, landscape_vib_result
    use xtb_landscape_coords, only : vec_norm, geometry_pack
    use xtb_landscape_hessian, only : landscape_write_hessian_file
@@ -290,7 +290,7 @@ subroutine landscape_vib(env, mol, chk, calc, settings, result)
 
    if (vib%n_imag > 0) then
       result%message = "frequency analysis completed with imaginary modes"
-      call env%warning("the Hessian has "//trim(int_to_string(vib%n_imag))//&
+      call env%warning("the Hessian has "//trim(landscape_int_to_string(vib%n_imag))//&
          & " imaginary mode(s): the geometry is not a minimum", source)
    else
       result%message = "frequency analysis completed"
@@ -440,19 +440,5 @@ subroutine write_normal_modes(env, mol, vib)
    close(unit)
 
 end subroutine write_normal_modes
-
-!> Decimal representation of an integer for a message.
-pure function int_to_string(value) result(string)
-   !> Value to convert
-   integer, intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=16) :: buffer
-
-   write(buffer, '(i0)') value
-   string = trim(buffer)
-
-end function int_to_string
 
 end module xtb_landscape_tasks_vib

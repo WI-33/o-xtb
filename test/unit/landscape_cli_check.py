@@ -76,6 +76,8 @@ mode mirrors one CMake test one-to-one:
   banner <exe> <input> <rundir>       -> xtb/landscape-banner
   enginebanner <exe> <input> <rundir> -> xtb/landscape-engine-banner
   programname <exe> <input> <rundir>  -> xtb/landscape-program-name
+  nonfinite <exe> <input> <rundir>    -> xtb/landscape-nonfinite-value
+  irfatal <exe> <input> <rundir>      -> xtb/landscape-ir-fatal-status
   helptopic <exe> <input> <rundir> <main.F90>
                                      -> xtb/landscape-help-topic
   helpcolour <exe> <input> <rundir>
@@ -4102,6 +4104,192 @@ def check_scan_knobs(exe, inp, rundir):
             fail("--lscan-%s did not change the scan" % label)
 
 
+#: The progress line the numerical Hessian provider prints before it starts
+#: its displaced single points (`src/landscape/types/hessian.f90`).
+HESS_PROGRESS_LINE = re.compile(
+    r"^ (computing|rebuilding) the numerical Hessian: (\d+) displaced "
+    r"single points \(6N, step +5[.]00E-03 bohr\)$")
+#: One row of the live per-step table of a minimisation
+#: (`landscape_print_step`, `src/landscape/types/results.f90`): iteration
+#: number, the 12-decimal energy and the 4-decimal dE column.  The
+#: `convergence history` table printed after the loop has a `es15.6` gnorm in
+#: that column instead, so the two tables cannot be confused.
+HESS_STEP_LINE = re.compile(r"^ +(\d{1,6}) +-?\d+[.]\d{12} +-?\d+[.]\d{4} ")
+
+
+def hess_events(output):
+    """The Hessian progress lines and the macro steps of a minimisation.
+
+    Returns the events between the settings block and the `converged:`
+    summary in output order, as `("build", "computing"|"rebuilding")` and
+    `("step", n)`.  The cut at the summary drops the post-loop
+    `convergence history` table, which repeats the step numbers.
+    """
+    stop = re.search(r"(?m)^ converged:", output)
+    text = output[:stop.start()] if stop else output
+    events = []
+    for line in text.splitlines():
+        build = HESS_PROGRESS_LINE.match(line)
+        if build is not None:
+            events.append(("build", build.group(1)))
+            continue
+        step = HESS_STEP_LINE.match(line)
+        if step is not None:
+            events.append(("step", int(step.group(1))))
+    return events
+
+
+def hess_builds(output):
+    """The progress lines of a run, in order, as `(verb, n_eval)` pairs."""
+    return [(match.group(1), int(match.group(2)))
+            for match in (HESS_PROGRESS_LINE.match(line)
+                          for line in output.splitlines())
+            if match is not None]
+
+
+def check_hess_progress(exe, inp, rundir, stretch):
+    """The Hessian build explains its pause before the pause happens.
+
+    Mirrors `xtb/landscape-hess-progress`.  The numerical provider is 6N
+    displaced single points at `printlevel = -1`, so the run used to go quiet
+    for the whole build (`docs/_simplify-recon/201`); the line names the
+    source and the exact number of evaluations the provider will make, it is
+    printed **before** the first step row, and a periodic rebuild announces
+    itself the same way.  A `model` Hessian costs no evaluation and therefore
+    prints nothing at all.
+    """
+    common = ["--gfn", "2", "--norestart", "--lopt", "--lopt-engine", "rfo"]
+    status, output, _ = knobs_run(exe, stretch, common, rundir,
+                                  "hessprogress-default")
+    if status != 0:
+        fail("the default RFO minimisation failed with status %d" % status,
+             output)
+    builds = hess_builds(output)
+    if [verb for verb, _ in builds] != ["computing", "rebuilding"]:
+        fail("the run did not announce its Hessian builds (%r)" % (builds,),
+             output)
+    if any(n_eval != 18 for _, n_eval in builds):
+        fail("the progress line does not name the 6N = 18 evaluations the "
+             "provider makes (%r)" % (builds,), output)
+    events = hess_events(output)
+    if events[:1] != [("build", "computing")]:
+        fail("the progress line is not the first event after the settings "
+             "block (%r)" % (events[:3],), output)
+    try:
+        rebuild = events.index(("build", "rebuilding"))
+    except ValueError:
+        fail("the rebuild announced no progress line (%r)" % (events,), output)
+    before = [event for event in events[:rebuild] if event[0] == "step"]
+    after = [event for event in events[rebuild + 1:] if event[0] == "step"]
+    if not before or not after:
+        fail("the run has no step rows around the rebuild (%r)" % (events,),
+             output)
+    if before[-1] != ("step", 5) or after[0] != ("step", 6):
+        fail("the rebuild line does not sit between step 5 and step 6 (%r)"
+             % (events,), output)
+
+    status, output, _ = knobs_run(
+        exe, stretch, common + ["--lopt-hessian", "model"], rundir,
+        "hessprogress-model")
+    if status != 0:
+        fail("the model Hessian run failed with status %d" % status, output)
+    if hess_builds(output):
+        fail("a model Hessian (0 evaluations) printed a progress line",
+             output)
+
+
+def check_opt_recalc(exe, inp, rundir, stretch):
+    """`--lopt-recalc` sets the Hessian rebuild interval of the RFO step.
+
+    Mirrors `xtb/landscape-opt-recalc`.  The field was fixed at 5 with no
+    flag reaching it (`src/landscape/types/settings.f90`); the check pins the
+    semantics: 0 disables the rebuild (one Hessian, the step-6 pause is
+    gone), 2 rebuilds four times, the explicit 5 is the default (byte
+    identical geometry), and a value that is not a non-negative integer is
+    reported (fatal with `--strict`).
+    """
+    common = ["--gfn", "2", "--norestart", "--lopt", "--lopt-engine", "rfo"]
+
+    def interval(value):
+        label = "optrecalc-%s" % value if value else "optrecalc-default"
+        extra = ["--lopt-recalc", value] if value else []
+        status, output, workdir = knobs_run(exe, stretch, common + extra,
+                                           rundir, label)
+        if status != 0:
+            fail("--lopt-recalc %s failed with status %d"
+                 % (value or "(default)", status), output)
+        if not re.search(r"Hessian rebuild interval: +%s steps"
+                         % (value if value else "5"), output):
+            fail("--lopt-recalc %s did not reach the minimisation"
+                 % (value or "(default)"), output)
+        return output, workdir
+
+    # Measured on the stretched water: interval 0 converges in 12 steps after
+    # one Hessian, the default interval 5 in 10 steps after two (the rebuild
+    # at step 6), interval 2 in 5 steps after three (rebuilds at steps 2 and
+    # 4).  The shorter trajectory of the tighter interval is the reason the
+    # counts are not simply `steps / interval + 1`.
+    for value, expected_builds, expected_hessians in (("0", 1, 1),
+                                                      ("5", 2, 2),
+                                                      ("2", 3, 3)):
+        output, workdir = interval(value)
+        verbs = [verb for verb, _ in hess_builds(output)]
+        if len(verbs) != expected_builds:
+            fail("--lopt-recalc %s announced %d builds, expected %d (%r)"
+                 % (value, len(verbs), expected_builds, verbs), output)
+        reported = re.search(r"landscape engine: Hessians +(\d+)\s*$",
+                             output, re.M)
+        if reported is None or int(reported.group(1)) != expected_hessians:
+            fail("--lopt-recalc %s reported %r Hessian builds, expected %d"
+                 % (value, reported.group(1) if reported else None,
+                    expected_hessians), output)
+        if value == "0":
+            if not re.search(r"(?m)^ steps: +12\s*$", output):
+                fail("--lopt-recalc 0 did not change the trajectory", output)
+            if "rebuilding the numerical Hessian" in output:
+                fail("--lopt-recalc 0 still rebuilt the Hessian", output)
+        elif value == "5":
+            if not re.search(r"(?m)^ steps: +10\s*$", output):
+                fail("the default interval (5) does not stop after 10 steps",
+                     output)
+            if "rebuilding the numerical Hessian" not in output:
+                fail("--lopt-recalc 5 did not rebuild the Hessian", output)
+
+    # An explicit 5 is the default: the same number of builds and the same
+    # geometry.  The two runs are compared by file, because stdout carries
+    # machine dependent timing lines.
+    _, default_dir = interval("")
+    _, five_dir = interval("5")
+    if knobs_file(default_dir, "xtbopt.xyz") != knobs_file(five_dir,
+                                                           "xtbopt.xyz"):
+        fail("--lopt-recalc 5 is not the default interval")
+
+    status, output, _ = knobs_run(
+        exe, stretch, common + ["--lopt-recalc", "x"], rundir,
+        "optrecalc-invalid")
+    if status == 0:
+        fail("--lopt-recalc x was accepted", output)
+    if "The --lopt-recalc flag requires an integer" not in output:
+        fail("the unparsable value was not reported", output)
+
+    negative = common + ["--lopt-recalc", "-3"]
+    status, output, _ = knobs_run(exe, stretch, negative, rundir,
+                                  "optrecalc-negative")
+    if status != 0:
+        fail("--lopt-recalc -3 aborted without --strict (status %d)" % status,
+             output)
+    if "[WARNING]" not in output:
+        fail("--lopt-recalc -3 was not reported in lax mode", output)
+    if "--lopt-recalc needs 0 (no rebuild)" not in output:
+        fail("the lax report does not name the flag", output)
+    status, output, _ = knobs_run(exe, stretch, negative + ["--strict"],
+                                  rundir, "optrecalc-negative-strict")
+    if status == 0:
+        fail("--lopt-recalc -3 did not abort with --strict", output)
+    if "--lopt-recalc needs 0 (no rebuild)" not in output:
+        fail("the --strict report does not name the flag", output)
+
+
 def check_hess_step_alias(exe, inp, rundir, second):
     """The canonical `--l*-hess-step` names and their older spellings.
 
@@ -6035,6 +6223,174 @@ def check_programname(exe, inp, rundir):
     print("failing run: 'abnormal termination of oxtb' on stderr")
 
 
+#: A value no finite-number parser rejects but no comparison catches either:
+#: `read(sec,*,iostat=)` accepts `nan` and `inf`, `<`/`>` are false against NaN,
+#: and an SCC accuracy or a force constant of NaN poisons every number the run
+#: prints.  The landscape suite therefore refuses a non-finite value where the
+#: setting is consumed (the xcontrol block merges into the same state after the
+#: command line, so a parse-site check would miss `$thermo temp=nan`).
+NONFINITE_CASES = [
+    ("--lvib --lvib-temp nan", ["--lvib", "--lvib-temp", "nan"], "--lvib-temp"),
+    ("--lvib --lvib-freq-scal inf",
+     ["--lvib", "--lvib-freq-scal", "inf"], "--lvib-freq-scal"),
+    ("--lvib --lvib-imag-cutoff nan",
+     ["--lvib", "--lvib-imag-cutoff", "nan"], "--lvib-imag-cutoff"),
+    ("--lvib --lvib-hess-step nan",
+     ["--lvib", "--lvib-hess-step", "nan"], "--lvib-hess-step"),
+    ("--lscan --lscan-fc nan",
+     ["--lscan", "--lscan-coord", "distance", "--lscan-atoms", "1,2",
+      "--lscan-step", "0.1", "--lscan-nstep", "2", "--lscan-fc", "nan"],
+     "--lscan-fc"),
+]
+
+
+#: Labels of the settings echo: the task prints the value it was given, so a
+#: NaN here is the *input* being named, not a number the run computed.
+ECHO_LABELS = ("program call", "Hessian step:", "Hessian SCC accuracy:")
+
+
+def nan_lines(output, extra=()):
+    """Result lines that carry a NaN/Inf number.
+
+    The diagnostic itself names the value (`NaN`), so the `-1-`/`-2-` lines of
+    the environment log, the echoed `program call` line, the settings echo of
+    `ECHO_LABELS` and the termination report are filtered out; what remains is
+    a number the run computed.
+    """
+    hits = []
+    for line in output.splitlines():
+        if not re.search(r"(?i)\b(nan|inf)\b", line):
+            continue
+        stripped = line.lstrip()
+        if stripped.startswith("-1-") or stripped.startswith("-2-"):
+            continue
+        if "ERROR" in line.upper():
+            continue
+        if any(label in line for label in ECHO_LABELS):
+            continue
+        if any(token in line for token in extra):
+            continue
+        hits.append(line)
+    return hits
+
+
+def check_nonfinite(exe, inp, rundir):
+    """A non-finite value for a numeric flag is reported, never computed with.
+
+    Mirrors `xtb/landscape-nonfinite-value`.  Every flag below accepts `nan` or
+    `inf` at the parser, and in a release build the value used to reach the
+    calculation: `--lvib-temp nan` printed a complete table of NaN
+    (`H(0)-H(T)`, `T*S`, `G(T)`) and exited **0** - a silent wrong answer - and
+    `--acc nan` stored a NaN SCC accuracy.  The five landscape flags are
+    refused where the merged setting is consumed, so the run stops with a
+    message that names flag and value; `--acc` keeps the default and is a
+    warning, fatal under `--strict`.
+    """
+    for label, args, flag in NONFINITE_CASES:
+        directory = os.path.join(rundir, "nonfinite" +
+                                 re.sub(r"[^A-Za-z0-9]", "_", label))
+        shutil.rmtree(directory, ignore_errors=True)
+        status, output = run(exe, inp, ["--gfn", "2", "--norestart"] + args,
+                             directory)
+        if status == 0:
+            fail("'%s' exited 0 instead of refusing the value" % label, output)
+        if flag not in output:
+            fail("'%s' does not name the flag %s" % (label, flag), output)
+        hits = nan_lines(output, extra=(flag, "nan", "inf"))
+        if hits:
+            fail("'%s' computed with the value: %s"
+                 % (label, hits[0].strip()), output)
+
+    # The same flags with a usable value must still run, so the check cannot be
+    # satisfied by rejecting the flag outright.
+    directory = os.path.join(rundir, "finite")
+    shutil.rmtree(directory, ignore_errors=True)
+    status, output = run(exe, inp, ["--gfn", "2", "--norestart", "--lvib",
+                                    "--lvib-temp", "300"], directory)
+    if status != 0:
+        fail("--lvib --lvib-temp 300 failed", output)
+
+    # `--acc nan`: lax keeps the default accuracy (the energy is the one of a
+    # run without the flag) and warns; `--strict` makes the same value fatal.
+    energy_re = re.compile(r"TOTAL ENERGY +(-?[0-9]+\.[0-9]+)")
+    plain_dir = os.path.join(rundir, "acc-plain")
+    shutil.rmtree(plain_dir, ignore_errors=True)
+    status, output = run(exe, inp, ["--gfn", "2", "--sp", "--norestart"],
+                         plain_dir)
+    if status != 0:
+        fail("the reference single point failed", output)
+    reference = energy_re.search(output)
+    if not reference:
+        fail("no TOTAL ENERGY in the reference single point", output)
+    lax_dir = os.path.join(rundir, "acc-lax")
+    shutil.rmtree(lax_dir, ignore_errors=True)
+    status, output = run(exe, inp, ["--gfn", "2", "--sp", "--norestart",
+                                    "--acc", "nan"], lax_dir)
+    if status != 0:
+        fail("--acc nan is fatal without --strict", output)
+    if "--acc needs a finite accuracy" not in output:
+        fail("--acc nan was not reported", output)
+    energy = energy_re.search(output)
+    if not energy:
+        fail("no TOTAL ENERGY with --acc nan", output)
+    if energy.group(1) != reference.group(1):
+        fail("--acc nan changed the energy (%s, default %s)"
+             % (energy.group(1), reference.group(1)), output)
+    strict_dir = os.path.join(rundir, "acc-strict")
+    shutil.rmtree(strict_dir, ignore_errors=True)
+    status, output = run(exe, inp, ["--gfn", "2", "--sp", "--norestart",
+                                    "--strict", "--acc", "nan"], strict_dir)
+    if status == 0:
+        fail("--strict --acc nan exited 0", output)
+    print("non-finite values reported; the finite ones still run")
+
+
+def check_ir_fatal(exe, inp, rundir):
+    """A fatal path of the `ir` subcommand exits non-zero.
+
+    Mirrors `xtb/landscape-ir-fatal-status`.  `oxtb ir` without `--born` used
+    an **unallocated** `intent(out)` file name (`src/prog/irmod.f90`), and the
+    corrupted-file branch printed `... aborting` and executed a bare `stop`,
+    which returns exit status **0**: a fatal error that a script cannot see.
+    The name now defaults to `born.out`, a missing file is reported before the
+    reader fails on its own, and the unreadable-file branch goes through
+    `env%error` + `env%checkpoint`, whose termination status is 1.
+    """
+    def run_ir(directory):
+        """Run the `ir` subcommand: the subcommand word comes first."""
+        os.makedirs(directory, exist_ok=True)
+        proc = subprocess.run(
+            [exe, "ir", inp],
+            cwd=directory,
+            capture_output=True,
+            text=False,
+        )
+        return proc.returncode, decode(proc.stdout) + decode(proc.stderr)
+
+    # (1) a truncated dipole derivative file: the read fails and the run aborts
+    broken = os.path.join(rundir, "broken")
+    shutil.rmtree(broken, ignore_errors=True)
+    os.makedirs(broken, exist_ok=True)
+    with open(os.path.join(broken, "born.out"), "w") as handle:
+        handle.write("1.0 0.0 0.0\n")
+    status, output = run_ir(broken)
+    if status == 0:
+        fail("a truncated born.out exited 0", output)
+    if "born.out" not in output or "corrupted" not in output:
+        fail("the truncated born.out was not reported", output)
+
+    # (2) no born.out at all: reported against the flag, not by a raw abort
+    missing = os.path.join(rundir, "missing")
+    shutil.rmtree(missing, ignore_errors=True)
+    os.makedirs(missing, exist_ok=True)
+    status, output = run_ir(missing)
+    if status == 0:
+        fail("a missing born.out exited 0", output)
+    if "--born" not in output:
+        fail("a missing born.out does not name --born", output)
+    print("ir: both fatal paths exit non-zero")
+
+
 #: The category keys of the grouped `--help` index, in print order; the
 #: unknown-topic error has to list every one of them.
 HELP_CATEGORY_KEYS = (
@@ -6122,8 +6478,8 @@ def check_help_topic(exe, inp, rundir, main_src):
 
     with open(main_src) as handle:
         implemented = implemented_flags(handle.read())
-    if len(implemented) != 248:
-        fail("the parser implements %d spellings, expected 248"
+    if len(implemented) != 249:
+        fail("the parser implements %d spellings, expected 249"
              % len(implemented))
     # `--siman` and `--gmd` are parsed but are not registered run types; they
     # are deliberately absent from the help table (see the allowlist in
@@ -6394,6 +6750,14 @@ def main():
         check_native_opt_symbols(exe, inp, rundir)
     elif mode == "optknobs":
         check_opt_knobs(exe, inp, rundir)
+    elif mode == "hessprogress":
+        if len(rest) < 1:
+            fail("the hessprogress mode needs the stretched water fixture")
+        check_hess_progress(exe, inp, rundir, rest[0])
+    elif mode == "optrecalc":
+        if len(rest) < 1:
+            fail("the optrecalc mode needs the stretched water fixture")
+        check_opt_recalc(exe, inp, rundir, rest[0])
     elif mode == "scanknobs":
         check_scan_knobs(exe, inp, rundir)
     elif mode == "hessstepalias":
@@ -6456,6 +6820,10 @@ def main():
         check_banner(exe, inp, rundir)
     elif mode == "programname":
         check_programname(exe, inp, rundir)
+    elif mode == "nonfinite":
+        check_nonfinite(exe, inp, rundir)
+    elif mode == "irfatal":
+        check_ir_fatal(exe, inp, rundir)
     elif mode == "helptopic":
         if len(rest) < 1:
             fail("the helptopic mode needs the path of src/prog/main.F90")

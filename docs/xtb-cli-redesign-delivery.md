@@ -34,7 +34,7 @@ The output of this direction (W0 + W1 design + stages 1/2/2b/3a/3b/3c) is: **re-
 | breaking changes | **18** (A3 + B0 + C8 + D1 + E1 + F4 + G1), all tested | design `11-cli-redesign.md` §10 summary row |
 | core-layer changes (`src/type\|xtb\|mctc\|param\|io\|disp\|coulomb`) | **0** | `git diff --name-only 24c069f..HEAD -- <7 dirs>` empty `[measured · this report]` |
 | `use xtb_landscape_*` outside `main.F90`/`src/landscape/` | **0** | `grep -rln "use xtb_landscape" src/ \| grep -v main.F90 \| grep -v src/landscape/` empty `[measured · this report]` |
-| current landscape tests | **147/147 pass** (44.4 s, `OMP_NUM_THREADS=1`) | `ctest -R landscape` `[measured · this report]` |
+| landscape tests at the close of this direction | **147/147 passed** (44.4 s, `OMP_NUM_THREADS=1`) | `ctest -R landscape` `[measured · this report]`; the tree carries **171** `add_test(` entries at `d7181ea` (2026-10-22), up from the 147 registered here |
 | current regression subset | **12/12 pass** | `ctest -R 'Singlepoint\|GFN\|model-hessian\|optimizer\|Argparser\|CAPI'` `[measured · this report]` |
 | work tree | clean, `git diff --cached` empty | `git status --short` empty `[measured · this report]` |
 
@@ -388,9 +388,9 @@ Rule: **every new test must prove that it is red under the old code**. This dire
 - **Registered**: the whole **class** "rc-channel blocks not consumed by the suite" is registered as **to be re-evaluated** (re-evaluate whether it should give a loud error once there are real users). See design §18.3.
 - **Note**: "the rc is always ignored" is **wrong** (`$scc`/`$thermo` are consumed through the global parameter state).
 
-### 7.2 The meson entries cannot be verified on this machine
+### 7.2 The meson entries are gone
 
-`meson`/`ninja` are not installed (`AGENTS.md` §4). All new tests are registered **both** in `test/unit/CMakeLists.txt` and `test/unit/meson.build` (synchronised by hand), but **only the CMake side has ever been executed**. Substitute checks: test names `uniq -d` = 0, bracket balance = 0, the python checker itself executed directly and passing (`25` §7, `39` §5, `54` §5). **The end-to-end meson build is unverified.**
+`meson`/`ninja` are not installed (`AGENTS.md` §4). All new tests are registered in `test/unit/CMakeLists.txt`, the one build system of the tree; when this was written a hand-synchronised `test/unit/meson.build` existed as well and was never executed, and it was deleted together with the whole Meson build in `e714161`. Substitute checks: test names `uniq -d` = 0, bracket balance = 0, the python checker itself executed directly and passing (`25` §7, `39` §5, `54` §5). The Meson build no longer exists, so there is nothing left to verify there.
 
 ### 7.3 The `--ohess` failure path and an **intentional deviation** from native
 

@@ -636,7 +636,11 @@ atom at \f(CRnormal\fP, clamped to 200..10000).
 Hessian backend, one of \f(CRnumerical\fP (default; the suite's own central
 differences of the electronic gradient), \f(CRmodel\fP (Lindh\-D2 model Hessian
 from \f(CRsrc/model_hessian\fP) or \f(CRfile\fP (read the TURBOMOLE layout written by an
-earlier run, see \f(CR\-\-lopt\-hessian\-file\fP).
+earlier run, see \f(CR\-\-lopt\-hessian\-file\fP). The numerical source costs 6N
+displaced single points; one line names that number before the first
+displacement starts, and every periodic rebuild announces itself the same
+way (see \f(CR\-\-lopt\-recalc\fP). The \f(CRmodel\fP and \f(CRfile\fP sources evaluate nothing
+and print no such line.
 .RE
 .sp
 \fB\-\-lopt\-max\-steps\fP \fIN\fP
@@ -644,6 +648,17 @@ earlier run, see \f(CR\-\-lopt\-hessian\-file\fP).
 step budget of the minimisation. The default is derived from the convergence
 level (3 steps per atom, clamped to 200..10000); \f(CR\-\-cycles\fP and the level
 change it. A budget given here wins over the level\-derived value.
+.RE
+.sp
+\fB\-\-lopt\-recalc\fP \fIN\fP
+.RS 4
+rebuild the exact Hessian through the provider every N RFO steps (default
+5); 0 disables the rebuild, so the run keeps the Hessian update alone, and
+an interval above the step budget never fires. A negative value is reported
+(and fatal with \f(CR\-\-strict\fP) and behaves like 0. Only \f(CR\-\-lopt\-engine rfo\fP
+rebuilds at all; the saddle search and the reaction path have their own
+\f(CR\-\-lts\-recalc\fP and \f(CR\-\-lirc\-recalc\fP. Each rebuild announces itself with one
+line before its displaced single points start.
 .RE
 .sp
 \fB\-\-lopt\-hess\-step\fP \fIVALUE\fP

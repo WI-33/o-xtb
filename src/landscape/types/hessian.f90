@@ -59,6 +59,7 @@
 !> and Hessian matrix elements in hartree/bohr^2.  The returned Hessian is
 !> dense and exactly symmetric.
 module xtb_landscape_hessian
+   use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
    use xtb_mctc_accuracy, only : wp
    use xtb_type_environment, only : TEnvironment
    use xtb_type_molecule, only : TMolecule
@@ -70,7 +71,8 @@ module xtb_landscape_hessian
    use xtb_modelhessian_lindh, only : newLindhD2ModelHessian
    use xtb_lin, only : lin
    use xtb_setparam, only : get_namespace
-   use xtb_landscape_settings, only : landscape_log_failed, landscape_value_present
+   use xtb_landscape_settings, only : landscape_log_failed, landscape_value_present, &
+      & landscape_int_to_string, landscape_real_to_string
    use xtb_landscape_settings, only : landscape_lowercase
    implicit none(type, external)
    private
@@ -116,6 +118,14 @@ module xtb_landscape_hessian
       !> (0 for providers that do not displace the geometry); the engine adds
       !> it to its cost counter so the reported cost is not underestimated.
       integer :: n_eval = 0
+      !> Print level of the progress lines of the provider: 0 silences them,
+      !> anything above prints one line **before** an expensive differentiation
+      !> starts.  It is set from the task settings by
+      !> `new_landscape_hessian_provider`, so the same gate that echoes the
+      !> steps of a run also explains the pause of a Hessian build (the first
+      !> one and every periodic rebuild).  Providers that cost no evaluation
+      !> (`model`, `file`) print nothing at all.
+      integer :: printlevel = 0
    contains
       !> Compute a dense, symmetric Hessian (hartree/bohr^2)
       procedure(hessian_compute), deferred :: compute
@@ -157,6 +167,11 @@ module xtb_landscape_hessian
    type, extends(landscape_hessian_provider) :: landscape_numerical_hessian_provider
       !> SCC accuracy used while building the Hessian (explicit parameter)
       real(wp) :: sccacc = 0.3_wp
+      !> Number of builds this provider instance has started; the progress
+      !> line uses it to say `computing` for the first build and `rebuilding`
+      !> for the periodic rebuild of the optimiser, the saddle search and the
+      !> reaction path.
+      integer :: n_builds = 0
    contains
       !> Central difference Hessian
       procedure :: compute => numerical_hessian_compute
@@ -216,7 +231,8 @@ end function landscape_hessian_source_known
 !> (there is no default provider on this path, a silent fallback would make
 !> the configured `hessian_source` a lie).  The name is matched case
 !> insensitively, like `landscape_hessian_source_known`.
-subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filename)
+subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filename, &
+   & printlevel)
    character(len=*), parameter :: source_name = 'new_landscape_hessian_provider'
    !> Computational environment
    type(TEnvironment), intent(inout) :: env
@@ -228,6 +244,8 @@ subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filenam
    real(wp), intent(in), optional :: sccacc
    !> File of the `file` source; required for that source, unused otherwise
    character(len=*), intent(in), optional :: filename
+   !> Print level of the provider progress lines, 0 (silent) when absent
+   integer, intent(in), optional :: printlevel
 
    real(wp) :: scc_accuracy
 
@@ -268,6 +286,10 @@ subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filenam
       call env%error("unknown hessian source: "//trim(source), source_name)
    end select
 
+   if (present(printlevel) .and. allocated(provider)) then
+      provider%printlevel = printlevel
+   end if
+
 end subroutine new_landscape_hessian_provider
 
 !> Central difference Hessian of the attached calculator.
@@ -305,6 +327,7 @@ subroutine numerical_hessian_compute(self, env, mol, chk, calc, hess, step, odlr
    real(wp) :: accuracy, egap, energy_plus, energy_minus
    real(wp) :: sigma(3, 3)
    integer :: iat, ic, icol, n, nlog
+   character(len=160) :: buffer
 
    final_err = 0.0_wp
    self%n_eval = 0
@@ -314,6 +337,15 @@ subroutine numerical_hessian_compute(self, env, mol, chk, calc, hess, step, odlr
    if (odlr) then
       call env%error("the numerical Hessian provider always builds the full "//&
          & "dense Hessian and does not support the ODLR approximation", source)
+      return
+   end if
+   ! A non-finite step passes the comparison below (`nan <= 0` is false) and
+   ! reaches the displaced single points: the CLI parser accepts `nan`/`inf`
+   ! for the Hessian step flags, so the value is named and refused here.
+   if (.not. ieee_is_finite(step)) then
+      write(buffer, '(a,es15.6,a)') "the finite difference step of the "//&
+         & "numerical Hessian (--l*-hess-step) is ", step, ", not a finite number"
+      call env%error(trim(buffer), source)
       return
    end if
    if (step <= 0.0_wp) then
@@ -330,6 +362,24 @@ subroutine numerical_hessian_compute(self, env, mol, chk, calc, hess, step, odlr
    calc%accuracy = self%sccacc
    egap = 0.0_wp
    sigma = 0.0_wp
+
+   ! Announce the pause before it starts: the loop below is 2 displaced single
+   ! points per Cartesian component, i.e. 6N evaluations, all of them at
+   ! `displacement_printlevel` and therefore silent.  The number is the exact
+   ! cost of this implementation, not a guessed constant, and the periodic
+   ! rebuild of a caller announces itself the same way (`n_builds > 0`).
+   if (self%printlevel > 0) then
+      if (self%n_builds == 0) then
+         write(env%unit, '(1x,a,a,a,i0,a,es9.2,a)') "computing the ", &
+            & self%name, " Hessian: ", 6*n, &
+            & " displaced single points (6N, step ", step, " bohr)"
+      else
+         write(env%unit, '(1x,a,a,a,i0,a,es9.2,a)') "rebuilding the ", &
+            & self%name, " Hessian: ", 6*n, &
+            & " displaced single points (6N, step ", step, " bohr)"
+      end if
+   end if
+   self%n_builds = self%n_builds + 1
 
    do iat = 1, n
       do ic = 1, 3
@@ -570,7 +620,7 @@ subroutine landscape_read_hessian_file(env, filename, hess, ok)
       if (ios < 0) exit
       if (ios > 0) then
          close(unit)
-         call env%error("cannot read record "//trim(int_to_string(irec + 2))//&
+         call env%error("cannot read record "//trim(landscape_int_to_string(irec + 2))//&
             & " of the Hessian file '"//trim(filename)//"' ("//trim(iomsg)//")", &
             & source)
          return
@@ -599,16 +649,16 @@ subroutine landscape_read_hessian_file(env, filename, hess, ok)
          ntoken = ntoken + 1
          if (ntoken > hessian_max_record) then
             close(unit)
-            call env%error("record "//trim(int_to_string(irec + 1))//" of the "//&
+            call env%error("record "//trim(landscape_int_to_string(irec + 1))//" of the "//&
                & "Hessian file '"//trim(filename)//"' holds more than "//&
-               & trim(int_to_string(hessian_max_record))//" values", source)
+               & trim(landscape_int_to_string(hessian_max_record))//" values", source)
             return
          end if
          token = line(istart:iend)
          read(token, *, iostat=ios) values(ntoken)
          if (ios /= 0) then
             close(unit)
-            call env%error("record "//trim(int_to_string(irec + 1))//" of the "//&
+            call env%error("record "//trim(landscape_int_to_string(irec + 1))//" of the "//&
                & "Hessian file '"//trim(filename)//"' holds the token '"//&
                & trim(token)//"', which is not a number", source)
             return
@@ -628,15 +678,15 @@ subroutine landscape_read_hessian_file(env, filename, hess, ok)
 
    if (terminator .and. nvals < n3*n3) then
       call env%error("the Hessian file '"//trim(filename)//"' ends after "//&
-         & trim(int_to_string(nvals))//" values, but the matrix of 3N = "//&
-         & trim(int_to_string(n3))//" needs "//trim(int_to_string(n3*n3)), &
+         & trim(landscape_int_to_string(nvals))//" values, but the matrix of 3N = "//&
+         & trim(landscape_int_to_string(n3))//" needs "//trim(landscape_int_to_string(n3*n3)), &
          & source)
       return
    end if
    if (nvals /= n3*n3) then
       call env%error("the Hessian file '"//trim(filename)//"' holds "//&
-         & trim(int_to_string(nvals))//" values, but the matrix of 3N = "//&
-         & trim(int_to_string(n3))//" needs "//trim(int_to_string(n3*n3))//&
+         & trim(landscape_int_to_string(nvals))//" values, but the matrix of 3N = "//&
+         & trim(landscape_int_to_string(n3))//" needs "//trim(landscape_int_to_string(n3*n3))//&
          & "; the file describes a different molecule", source)
       return
    end if
@@ -645,8 +695,8 @@ subroutine landscape_read_hessian_file(env, filename, hess, ok)
       do icol = 1, n3
          if (.not. landscape_value_present(work(icol, irow))) then
             call env%error("the Hessian file '"//trim(filename)//"' holds a "//&
-               & "non-finite matrix element at row "//trim(int_to_string(irow))//&
-               & ", column "//trim(int_to_string(icol)), source)
+               & "non-finite matrix element at row "//trim(landscape_int_to_string(irow))//&
+               & ", column "//trim(landscape_int_to_string(icol)), source)
             return
          end if
       end do
@@ -656,8 +706,8 @@ subroutine landscape_read_hessian_file(env, filename, hess, ok)
    scale = max(1.0_wp, maxval(abs(work)))
    if (asym > hessian_symmetry_tol*scale) then
       call env%error("the Hessian read from '"//trim(filename)//"' is not "//&
-         & "symmetric: max |h(i,j) - h(j,i)| = "//trim(real_to_string(asym))//&
-         & " Eh/bohr^2", source)
+         & "symmetric: max |h(i,j) - h(j,i)| = "//&
+         & trim(landscape_real_to_string(asym, '(es16.8)'))//" Eh/bohr^2", source)
       return
    end if
 
@@ -725,7 +775,7 @@ subroutine landscape_write_hessian_file(env, filename, hess, ok)
             & (packed(lin(i, j)), j=mincol, maxcol)
          if (ios /= 0) then
             close(unit)
-            call env%error("cannot write record "//trim(int_to_string(i))//&
+            call env%error("cannot write record "//trim(landscape_int_to_string(i))//&
                & " of the Hessian file '"//trim(filename)//"' ("//&
                & trim(iomsg)//")", source)
             return
@@ -805,33 +855,5 @@ pure function is_separator(char) result(separator)
       & char == achar(13)
 
 end function is_separator
-
-!> Decimal representation of an integer for an error message.
-pure function int_to_string(value) result(string)
-   !> Value to convert
-   integer, intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=16) :: buffer
-
-   write(buffer, '(i0)') value
-   string = trim(buffer)
-
-end function int_to_string
-
-!> Scientific representation of a real for an error message.
-pure function real_to_string(value) result(string)
-   !> Value to convert
-   real(wp), intent(in) :: value
-   !> Scientific string
-   character(len=:), allocatable :: string
-
-   character(len=32) :: buffer
-
-   write(buffer, '(es16.8)') value
-   string = trim(buffer)
-
-end function real_to_string
 
 end module xtb_landscape_hessian

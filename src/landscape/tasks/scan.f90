@@ -42,11 +42,10 @@ module xtb_landscape_tasks_scan
    use xtb_type_calculator, only : TCalculator
    use xtb_io_writer, only : writeMolecule
    use xtb_setparam, only : get_namespace
-   use xtb_landscape_settings, only : landscape_scan_settings, &
-      & landscape_restart_name, landscape_scan_coord_name, &
-      & landscape_missing_value, landscape_value_present, &
+   use xtb_landscape_settings, only : landscape_scan_settings, landscape_restart_name, &
+      & landscape_scan_coord_name, landscape_missing_value, landscape_value_present, &
       & landscape_lowercase, landscape_opt_algorithm_from_name, &
-      & landscape_opt_algorithm_name, p_landscape_opt_rfo
+      & landscape_opt_algorithm_name, p_landscape_opt_rfo, landscape_int_to_string
    use xtb_landscape_results, only : landscape_result
    use xtb_landscape_coords, only : geometry_pack, geometry_unpack
    use xtb_landscape_engine, only : landscape_engine, new_landscape_engine, &
@@ -204,7 +203,8 @@ subroutine landscape_scan(env, mol, chk, calc, settings, result)
 
    call new_landscape_engine(engine, settings%engine)
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
-      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file)
+      & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
+      & printlevel=settings%printlevel)
    if (.not. allocated(hp)) return
    call engine%set_hessian_provider(hp)
    call engine%set_calculator(calc)
@@ -301,8 +301,8 @@ subroutine landscape_scan(env, mol, chk, calc, settings, result)
 
    if (n_fail > 0) then
       result%message = "some scan points failed"
-      call env%error("landscape scan aborted: "//int_to_string(n_fail)//&
-         & " of "//int_to_string(result%n_steps)//" scan points failed (no "//&
+      call env%error("landscape scan aborted: "//landscape_int_to_string(n_fail)//&
+         & " of "//landscape_int_to_string(result%n_steps)//" scan points failed (no "//&
          & "energy; the failed points are the NaN rows of the scan table)", &
          & source)
    else if (n_unconverged == result%n_steps .and. result%n_steps > 0) then
@@ -331,7 +331,7 @@ subroutine landscape_scan(env, mol, chk, calc, settings, result)
       ! visible, because the constraint residual of such a point is non-zero
       ! (PLAN R-04).
       result%message = "scan completed with unconverged points"
-      call env%warning(int_to_string(n_unconverged)//" scan point(s) did "//&
+      call env%warning(landscape_int_to_string(n_unconverged)//" scan point(s) did "//&
          & "not converge; check the reported residual", source)
    else
       result%message = "scan completed"
@@ -614,19 +614,5 @@ function scan_unused_hessian_step(settings, algorithm) result(reason)
    end if
 
 end function scan_unused_hessian_step
-
-!> Decimal representation of an integer for an error message.
-function int_to_string(value) result(string)
-   !> Value to convert
-   integer, intent(in) :: value
-   !> Decimal string
-   character(len=:), allocatable :: string
-
-   character(len=16) :: buffer
-
-   write(buffer, '(i0)') value
-   string = trim(buffer)
-
-end function int_to_string
 
 end module xtb_landscape_tasks_scan

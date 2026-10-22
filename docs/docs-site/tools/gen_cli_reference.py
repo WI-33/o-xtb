@@ -70,8 +70,8 @@ from landscape_help_check import (  # noqa: E402
 #: The counts the gate is built on (`landscape_help_check.py` prints the same
 #: numbers).  A record inserted or deleted in `src/xhelp.f90` must be
 #: reflected here, so an unreviewed change of the table fails the generator.
-EXPECTED_ENTRIES = 222
-EXPECTED_SPELLINGS = 246
+EXPECTED_ENTRIES = 223
+EXPECTED_SPELLINGS = 247
 EXPECTED_CATEGORIES = 17
 
 CAT_KEY_DECL = "cat_key(n_cat) = [character(len=16) ::"

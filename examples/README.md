@@ -1,9 +1,10 @@
 # Worked examples for the o-xtb landscape task suite
 
-Fourteen runnable examples of the potential-energy-surface task suite (`--sp`, `--lopt`, `--lscan`,
-`--hess`/`--lvib`, `--lts`, `--lirc`), two per task, plus two multi-task chains.  Every example is a
-complete little case: the input geometry, the exact command line, the captured output, the natural
-output files, and a README that says what it shows and how to read the result.
+Sixteen runnable examples of the potential-energy-surface task suite (`--sp`, `--lopt`, `--lscan`,
+`--hess`/`--lvib`, `--lts`, `--lirc`), two per task (seven tasks, fourteen cases), plus two
+multi-task chains.  Every example is a complete little case: the input geometry, the exact command
+line, the captured output, the natural output files, and a README that says what it shows and how to
+read the result.
 
 Every system is a **30-33 atom GFN2-xTB** job that finishes in seconds to a couple of minutes at
 `OMP_NUM_THREADS=1`.  Every number quoted in a case README is a line in that case's captured log -
