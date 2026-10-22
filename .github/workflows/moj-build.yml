@@ -28,7 +28,8 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG" \
+                -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG -static" \
+                -DBUILD_SHARED_LIBS=OFF \
                 -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
                 -DWITH_TESTS=OFF
 
