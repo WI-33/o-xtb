@@ -28,7 +28,7 @@ jobs:
         run: |
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG -static" \
+                -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG -static -Wl,--stack,134217728" \
                 -DBUILD_SHARED_LIBS=OFF \
                 -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
                 -DWITH_TESTS=OFF
@@ -39,7 +39,7 @@ jobs:
       - name: Smoke test (water, GFN2 single point)
         run: |
           printf '3\nwater\nO 0.0 0.0 0.0\nH 0.758602 0.0 -0.504284\nH -0.758602 0.0 -0.504284\n' > water.xyz
-          ./build/oxtb.exe water.xyz --sp --gfn 2 | grep "total energy"
+          ./build/oxtb.exe water.xyz --sp --gfn 2 | grep -i "total energy"
 
       - uses: actions/upload-artifact@v4
         with:
