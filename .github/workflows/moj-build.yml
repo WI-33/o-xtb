@@ -1,4 +1,4 @@
-name: Build oxtb.exe with Intel MKL (Windows)
+name: Build oxtb.exe (Windows)
 
 on:
   workflow_dispatch:
@@ -10,13 +10,13 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      # Aktualizacja do v4.2.2 gwarantuje pełne i natywne wsparcie dla Node 24
+      - uses: actions/checkout@v4.2.2
 
       - uses: msys2/setup-msys2@v2
         with:
           msystem: UCRT64
           update: true
-          # Zastąpiono mingw-w64-ucrt-x86_64-openblas pakietem mkl
           install: >-
             mingw-w64-ucrt-x86_64-gcc-fortran
             mingw-w64-ucrt-x86_64-mkl
@@ -27,11 +27,11 @@ jobs:
 
       - name: Configure
         run: |
-          # Zmieniono dostawcę BLAS na Intel MKL (MKL)
+          # BLA_VENDOR ustawiony na wersję sekwencyjną Intela, zapobiegającą konfliktom w MSYS2
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_Fortran_FLAGS_RELEASE="-O3 -DNDEBUG -march=skylake" \
-                -DBLA_VENDOR=MKL \
+                -DBLA_VENDOR=Intel10_64lp_seq \
                 -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
                 -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
 
@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir dist
           cp build/oxtb.exe dist/
-          # Kopiowanie bibliotek runtime specyficznych dla Intel MKL oraz gfortran
+          # Kopiowanie zestawu bibliotek runtime wymaganych przez program i Intel MKL
           cp /ucrt64/bin/libmkl_rt.dll dist/
           cp /ucrt64/bin/libgfortran-5.dll dist/
           cp /ucrt64/bin/libquadmath-0.dll dist/
@@ -55,7 +55,8 @@ jobs:
           cp /ucrt64/bin/libgomp-1.dll dist/
           cp /ucrt64/bin/libgcc_s_ucrt-1.dll dist/ || true
 
-      - uses: actions/upload-artifact@v4
+      # Aktualizacja akcji wrzucania artefaktów do wersji kompatybilnej z Node 24
+      - uses: actions/upload-artifact@v4.6.1
         with:
-          name: oxtb-windows-x64-mkl-standalone
+          name: oxtb-windows-x64-standalone
           path: dist/
