@@ -88,6 +88,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_Fortran_COMPILER=ifx `
             -DCMAKE_C_COMPILER=icx `
+            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728' `
             '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG' `
             -DBLA_VENDOR=Intel10_64lp `
             -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
@@ -111,7 +112,7 @@ jobs:
           .\build\oxtb.exe water.xyz --sp --gfn 2
           if ($LASTEXITCODE -ne 0) { throw 'GFN2 water smoke test failed.' }
 
-      - name: Package executable and Intel runtime DLLs
+      - name: Package executable and required Intel runtime DLLs
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path '.\build\oxtb.exe')) { throw 'oxtb.exe was not produced.' }
@@ -119,48 +120,45 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item '.\build\oxtb.exe' $dist -Force
 
-          # MKL component linking needs versioned DLLs such as
-          # mkl_intel_thread.2.dll and mkl_core.2.dll. Copy the MKL runtime
-          # DLL set (not just mkl_rt.dll), plus Intel OpenMP and Fortran runtimes.
+          # Package only the three MKL DLLs confirmed as required by this build.
+          # Do not copy every mkl_*.dll: that needlessly inflates the artifact.
           $oneApi = 'C:\Program Files (x86)\Intel\oneAPI'
           $mklRoots = @($env:MKLROOT, (Join-Path $oneApi 'mkl\latest')) |
             Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-          foreach ($root in $mklRoots) {
-            foreach ($subdir in @('redist\intel64', 'bin', 'redist\intel64_win')) {
-              $dir = Join-Path $root $subdir
-              if (Test-Path $dir) {
-                Get-ChildItem -Path $dir -File -Filter 'mkl_*.dll' -ErrorAction SilentlyContinue |
-                  ForEach-Object {
-                    $destination = Join-Path $dist $_.Name
-                    if (-not (Test-Path $destination)) { Copy-Item $_.FullName $destination -Force }
-                  }
+          $requiredMklDlls = @('mkl_avx2.2.dll', 'mkl_core.2.dll', 'mkl_intel_thread.2.dll')
+          foreach ($name in $requiredMklDlls) {
+            $found = $null
+            foreach ($root in $mklRoots) {
+              $found = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($found) { break }
+            }
+            if (-not $found) {
+              throw "Required MKL DLL '$name' was not found under MKLROOT/oneAPI MKL."
+            }
+            Copy-Item $found.FullName (Join-Path $dist $name) -Force
+          }
+
+          # Keep only the small Intel compiler/OpenMP runtime DLLs that may be
+          # needed by the executable; no broad recursive copy of the oneAPI tree.
+          $runtimeRoots = @(
+            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
+            (Join-Path $oneApi 'compiler\latest\bin')
+          ) | Where-Object { Test-Path $_ } | Select-Object -Unique
+          $runtimeNames = @('libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
+          foreach ($name in $runtimeNames) {
+            foreach ($root in $runtimeRoots) {
+              $runtime = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+              if ($runtime) {
+                Copy-Item $runtime.FullName (Join-Path $dist $name) -Force
+                break
               }
             }
           }
 
-          $runtimeRoots = @(
-            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
-            (Join-Path $oneApi 'compiler\latest\bin'),
-            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler')
-          ) | Where-Object { Test-Path $_ } | Select-Object -Unique
-          $runtimeNames = @('libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
-          foreach ($root in $runtimeRoots) {
-            foreach ($name in $runtimeNames) {
-              Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
-                ForEach-Object {
-                  $destination = Join-Path $dist $_.Name
-                  if (-not (Test-Path $destination)) { Copy-Item $_.FullName $destination -Force }
-                }
-            }
-          }
-
-          # Fail early if the exact DLL from the reported error was not packaged.
-          $threadDll = Get-ChildItem -Path $dist -Filter 'mkl_intel_thread*.dll' -File -ErrorAction SilentlyContinue
-          if (-not $threadDll) {
-            throw 'MKL threading DLL was not found in oneAPI runtime directories; inspect MKLROOT and the installation layout.'
-          }
-          Get-ChildItem $dist -File | Select-Object Name, Length
           Copy-Item '.\build\share' $dist -Recurse -Force
+          Get-ChildItem $dist -File | Select-Object Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
