@@ -1,7 +1,7 @@
-# Experimental native Windows build of o-xtb with Intel oneMKL.
-# Start manually from Actions -> Windows MKL -> Run workflow.
-# This deliberately leaves windows-cmake.yml (OpenBLAS) unchanged.
-name: Windows MKL (experimental)
+# Native Windows x64 build of o-xtb with Intel ifx + oneMKL.
+# Includes stack/heap mitigations for the TS Hessian stack-overflow report.
+# Trigger manually: GitHub Actions -> Windows MKL stack fix -> Run workflow.
+name: Windows MKL stack fix
 
 on:
   workflow_dispatch:
@@ -12,7 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     defaults:
       run:
         shell: pwsh
@@ -21,15 +21,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
 
-      # Installs the Intel oneAPI HPC Toolkit, which provides ifx and oneMKL.
-      # Installer availability/winget metadata can change; this step verifies
-      # the required tools instead of silently falling back to OpenBLAS.
       - name: Install Intel oneAPI HPC Toolkit
         run: |
           $ErrorActionPreference = 'Stop'
           winget install --id Intel.OneAPI.HPCToolkit --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
           if ($LASTEXITCODE -ne 0) {
-            throw "winget could not install Intel oneAPI HPC Toolkit (exit $LASTEXITCODE). See the step log; no OpenBLAS fallback is attempted."
+            throw "Could not install Intel oneAPI HPC Toolkit (exit $LASTEXITCODE)."
           }
 
       - name: Initialize oneAPI environment and verify compiler/MKL
@@ -49,11 +46,9 @@ jobs:
       - name: Install CMake and Ninja
         run: |
           python -m pip install --upgrade cmake ninja
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install CMake/Ninja.' }
 
-      # This source tree currently adds GNU ld flags (-static and -Wl,...) to
-      # every WIN32 build. Those flags are not valid for the native Intel/MSVC
-      # linker, so narrow that block to GNU/MinGW builds. The change is applied
-      # only in the CI checkout and does not modify the repository.
+      # The repository has GNU ld flags under WIN32. Restrict those flags to GNU.
       - name: Make Windows linker flags compiler-specific
         run: |
           $ErrorActionPreference = 'Stop'
@@ -81,15 +76,15 @@ jobs:
       - name: Initialize MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Configure with Intel Fortran and MKL
+      - name: Configure with Intel Fortran and MKL (larger stack + heap arrays)
         run: |
           $ErrorActionPreference = 'Stop'
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_Fortran_COMPILER=ifx `
             -DCMAKE_C_COMPILER=icx `
-            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728' `
-            '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG' `
+            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:536870912' `
+            '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG /heap-arrays' `
             -DBLA_VENDOR=Intel10_64lp `
             -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
             -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
@@ -97,11 +92,17 @@ jobs:
 
       - name: Build
         run: |
-          cmake --build build --parallel 2
+          cmake --build build --parallel 2 --verbose 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          if (-not (Test-Path '.\build\oxtb.exe')) { throw 'build\oxtb.exe was not produced.' }
 
       - name: Smoke test (water, GFN2 single point)
+        env:
+          KMP_STACKSIZE: 64m
+          OMP_STACKSIZE: 64m
+          OMP_NUM_THREADS: '1'
         run: |
+          $ErrorActionPreference = 'Stop'
           @'
           3
           water
@@ -109,19 +110,22 @@ jobs:
           H 0.758602 0.0 -0.504284
           H -0.758602 0.0 -0.504284
           '@ | Set-Content -Encoding ascii water.xyz
-          .\build\oxtb.exe water.xyz --sp --gfn 2
+          .\build\oxtb.exe water.xyz --sp --gfn 2 2>&1 | Tee-Object -FilePath smoke-test.log
           if ($LASTEXITCODE -ne 0) { throw 'GFN2 water smoke test failed.' }
 
-      - name: Package executable and required Intel runtime DLLs
+      - name: Package minimal runtime and launch helper
         run: |
           $ErrorActionPreference = 'Stop'
-          if (-not (Test-Path '.\build\oxtb.exe')) { throw 'oxtb.exe was not produced.' }
+          $exe = '.\build\oxtb.exe'
+          if (-not (Test-Path $exe)) { throw 'oxtb.exe was not produced.' }
+          if (-not (Test-Path '.\build\share')) { throw 'build\share is missing; refusing to create incomplete package.' }
+
           $dist = Join-Path $PWD 'dist'
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item '.\build\oxtb.exe' $dist -Force
+          Copy-Item $exe $dist -Force
+          Copy-Item '.\build\share' $dist -Recurse -Force
 
-          # Package only the three MKL DLLs confirmed as required by this build.
-          # Do not copy every mkl_*.dll: that needlessly inflates the artifact.
+          # The three MKL DLLs requested for this installation.
           $oneApi = 'C:\Program Files (x86)\Intel\oneAPI'
           $mklRoots = @($env:MKLROOT, (Join-Path $oneApi 'mkl\latest')) |
             Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
@@ -129,18 +133,14 @@ jobs:
           foreach ($name in $requiredMklDlls) {
             $found = $null
             foreach ($root in $mklRoots) {
-              $found = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
-                Select-Object -First 1
+              $found = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($found) { break }
             }
-            if (-not $found) {
-              throw "Required MKL DLL '$name' was not found under MKLROOT/oneAPI MKL."
-            }
+            if (-not $found) { throw "Required MKL DLL '$name' was not found under MKLROOT/oneAPI MKL." }
             Copy-Item $found.FullName (Join-Path $dist $name) -Force
           }
 
-          # Keep only the small Intel compiler/OpenMP runtime DLLs that may be
-          # needed by the executable; no broad recursive copy of the oneAPI tree.
+          # Copy only common Intel runtime dependencies if present; avoid copying the entire oneAPI tree.
           $runtimeRoots = @(
             (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
             (Join-Path $oneApi 'compiler\latest\bin')
@@ -148,8 +148,7 @@ jobs:
           $runtimeNames = @('libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
           foreach ($name in $runtimeNames) {
             foreach ($root in $runtimeRoots) {
-              $runtime = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
-                Select-Object -First 1
+              $runtime = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
               if ($runtime) {
                 Copy-Item $runtime.FullName (Join-Path $dist $name) -Force
                 break
@@ -157,11 +156,34 @@ jobs:
             }
           }
 
-          Copy-Item '.\build\share' $dist -Recurse -Force
-          Get-ChildItem $dist -File | Select-Object Name, Length
+          @'
+          @echo off
+          setlocal
+          set "KMP_STACKSIZE=64m"
+          set "OMP_STACKSIZE=64m"
+          if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=1"
+          "%~dp0oxtb.exe" %*
+          exit /b %errorlevel%
+          '@ | Set-Content -Encoding ascii (Join-Path $dist 'run-oxtb.bat')
 
-      - uses: actions/upload-artifact@v4
+          @'
+          o-xtb Windows x64 / Intel ifx + oneMKL
+          This package includes oxtb.exe, share data, the requested MKL DLLs,
+          and any common Intel runtime DLLs found by the build workflow.
+          Run calculations with run-oxtb.bat so KMP_STACKSIZE and OMP_STACKSIZE
+          are set to 64 MiB. Example: run-oxtb.bat input.xyz --sp --gfn 2
+          Stack/heap changes are a mitigation, not a verified fix for every TS Hessian.
+          '@ | Set-Content -Encoding utf8 (Join-Path $dist 'README-RUNTIME.txt')
+
+          Write-Host 'Package contents:'
+          Get-ChildItem $dist -Recurse -File | Select-Object FullName, Length
+          foreach ($name in @('oxtb.exe','mkl_avx2.2.dll','mkl_core.2.dll','mkl_intel_thread.2.dll','run-oxtb.bat')) {
+            if (-not (Test-Path (Join-Path $dist $name))) { throw "Package is missing $name" }
+          }
+
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: oxtb-windows-x64-mkl-experimental
+          name: oxtb-windows-x64-mkl-stackfix
           path: dist/
           if-no-files-found: error
