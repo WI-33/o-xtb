@@ -1,5 +1,5 @@
 # Native Windows x64 build of o-xtb with Intel ifx + oneMKL.
-# Includes stack/heap mitigations for the TS Hessian stack-overflow report.
+# Uses a 128 MiB executable stack plus heap-array mitigation for the TS Hessian stack-overflow report.
 # Trigger manually: GitHub Actions -> Windows MKL stack fix -> Run workflow.
 name: Windows MKL stack fix
 
@@ -55,20 +55,37 @@ jobs:
           @'
           import pathlib, re
           p = pathlib.Path("CMakeLists.txt")
-          s = p.read_text(encoding="utf-8")
-          pattern = re.compile(r'if\(WIN32\)\s+target_link_options\(\s*\$\{XTB_EXE_NAME\}\s+PRIVATE\s+"-static"\s+"-Wl,--stack=16777216"\s+\)\s+endif\(\)', re.M)
-          replacement = '''if(WIN32 AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
-            target_link_options(
-              ${XTB_EXE_NAME}
-              PRIVATE
-              "-static"
-              "-Wl,--stack=16777216"
-            )
-          endif()'''
-          s2, n = pattern.subn(replacement, s, count=1)
-          if n != 1:
-              raise SystemExit("Expected GNU-only Windows linker block not found; refusing to patch.")
-          p.write_text(s2, encoding="utf-8", newline="")
+          source = p.read_text(encoding="utf-8-sig")
+          lines = source.splitlines(keepends=True)
+          stack = []
+          targets = []
+          for i, line in enumerate(lines):
+              stripped = line.strip()
+              m = re.match(r"if\s*\((.*?)\)", stripped, re.I)
+              if m:
+                  stack.append({"start": i, "condition": m.group(1).strip(), "depth": len(stack)})
+              if re.match(r"endif\s*\(", stripped, re.I) and stack:
+                  block = stack.pop()
+                  block_text = "".join(lines[block["start"]:i + 1])
+                  cond = re.sub(r"\s+", "", block["condition"]).upper()
+                  has_gnu_flags = ("-Wl," in block_text or '"-static"' in block_text or "-static" in block_text)
+                  if cond == "WIN32" and has_gnu_flags:
+                      targets.append(block["start"])
+          changed = 0
+          for i in targets:
+              indent = re.match(r"\s*", lines[i]).group(0)
+              lines[i] = indent + 'if(WIN32 AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")' + ("\r\n" if lines[i].endswith("\r\n") else "\n" if lines[i].endswith("\n") else "")
+              changed += 1
+          result = "".join(lines)
+          # Idempotent: accept a previously patched source, but never silently
+          # continue if GNU linker flags remain in an unguarded WIN32 block.
+          if changed == 0:
+              if re.search(r"if\s*\(\s*WIN32\s*\)(?:(?!endif\s*\().)*(?:-Wl,|-static)(?:(?!endif\s*\().)*endif\s*\(", result, re.I | re.S):
+                  raise SystemExit("Found GNU linker flags in an unguarded WIN32 block; inspect CMakeLists.txt.")
+              print("No unguarded GNU linker block needed patching (already fixed or not present).")
+          else:
+              print(f"Restricted {changed} GNU linker block(s) to the GNU Fortran compiler.")
+          p.write_text(result, encoding="utf-8", newline="")
           '@ | Set-Content -Encoding ascii patch_windows_link.py
           python patch_windows_link.py
           if ($LASTEXITCODE -ne 0) { throw 'CMake linker patch failed.' }
@@ -76,14 +93,14 @@ jobs:
       - name: Initialize MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Configure with Intel Fortran and MKL (larger stack + heap arrays)
+      - name: Configure with Intel Fortran and MKL (128 MiB stack + heap arrays)
         run: |
           $ErrorActionPreference = 'Stop'
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_Fortran_COMPILER=ifx `
             -DCMAKE_C_COMPILER=icx `
-            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:536870912' `
+            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728' `
             '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG /heap-arrays' `
             -DBLA_VENDOR=Intel10_64lp `
             -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
