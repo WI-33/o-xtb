@@ -10,7 +10,6 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      # Aktualizacja do v4.2.2 gwarantuje pełne i natywne wsparcie dla Node 24
       - uses: actions/checkout@v4.2.2
 
       - uses: msys2/setup-msys2@v2
@@ -27,11 +26,15 @@ jobs:
 
       - name: Configure
         run: |
-          # BLA_VENDOR ustawiony na wersję sekwencyjną Intela, zapobiegającą konfliktom w MSYS2
+          # Przekazujemy biblioteki poprzez flagi linkera bezpośrednio do flag wykonawczych CMake.
+          # Wersja 'mkl_rt' automatycznie mapuje poprawne instrukcje AVX2 dla architektury Skylake.
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
                 -DCMAKE_Fortran_FLAGS_RELEASE="-O3 -DNDEBUG -march=skylake" \
-                -DBLA_VENDOR=Intel10_64lp_seq \
+                -DCMAKE_EXE_LINKER_FLAGS="-lmkl_rt" \
+                -DCMAKE_SHARED_LINKER_FLAGS="-lmkl_rt" \
+                -DBLAS_LIBRARIES="-lmkl_rt" \
+                -DLAPACK_LIBRARIES="-lmkl_rt" \
                 -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
                 -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
 
@@ -47,7 +50,7 @@ jobs:
         run: |
           mkdir dist
           cp build/oxtb.exe dist/
-          # Kopiowanie zestawu bibliotek runtime wymaganych przez program i Intel MKL
+          # Kopiowanie stabilnego runtime Intel MKL i bibliotek pomocniczych GCC
           cp /ucrt64/bin/libmkl_rt.dll dist/
           cp /ucrt64/bin/libgfortran-5.dll dist/
           cp /ucrt64/bin/libquadmath-0.dll dist/
@@ -55,7 +58,6 @@ jobs:
           cp /ucrt64/bin/libgomp-1.dll dist/
           cp /ucrt64/bin/libgcc_s_ucrt-1.dll dist/ || true
 
-      # Aktualizacja akcji wrzucania artefaktów do wersji kompatybilnej z Node 24
       - uses: actions/upload-artifact@v4.6.1
         with:
           name: oxtb-windows-x64-standalone
