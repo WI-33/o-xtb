@@ -123,9 +123,9 @@ if(git_return)
 else()
   string(REGEX REPLACE "\n$" "" commit ${commit})
 endif()
-string(TIMESTAMP date "%Y/%m/%d")
-set(author $ENV{USERNAME})
-set(origin ${CMAKE_HOST_SYSTEM_NAME})
+# `date` and `author` are the two build inputs a caller can pin
+# (`SOURCE_DATE_EPOCH`, see that file); everything above comes from the commit.
+include("${CMAKE_CURRENT_LIST_DIR}/version_metadata.cmake")
 configure_file(
   "${PROJECT_SOURCE_DIR}/assets/templates/version.f90"
   "${PROJECT_BINARY_DIR}/include/xtb_version.fh"

@@ -4184,6 +4184,40 @@ add_test("xtb/landscape-help-values"
 set_tests_properties(xtb/landscape-help-values PROPERTIES
   ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1")
 
+# The two build inputs of the version header, `date` and `author`, are
+# compiled into the binary, so they decide whether two clean builds of one
+# commit produce the same bytes (report 209).
+# `cmake/version_metadata.cmake` computes them and
+# `landscape_repro_check.py` renders the real template with it in `cmake -P`
+# script mode: a build without `SOURCE_DATE_EPOCH` must keep showing today's
+# date, a build with it must take the date from the epoch **in UTC** (the
+# epoch 82800 is 1970-01-01T23:00Z, so local-time formatting would print
+# 1970/01/02 at UTC+8 and date the same epoch differently per time zone), and
+# the author must not depend on `$ENV{USERNAME}`.  The check reads the sources,
+# so it has no environment and no engine dependency; a wrong value is caught
+# here instead of by a four minute double build.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/repro_metadata_py.cmake" [=[
+file(MAKE_DIRECTORY "${RUNDIR}")
+execute_process(
+  COMMAND "${PYTHON}" "${SCRIPT}" "${CMAKE_EXE}" "${SRC}" "${RUNDIR}"
+  WORKING_DIRECTORY "${RUNDIR}"
+  RESULT_VARIABLE status
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE output
+)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "landscape_repro_check.py failed with status ${status}\n${output}")
+endif()
+]=])
+add_test("xtb/landscape-repro-metadata"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/landscape_repro_check.py
+  -DCMAKE_EXE=${CMAKE_COMMAND}
+  -DSRC=${PROJECT_SOURCE_DIR}
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-repro-metadata
+  -P "${CMAKE_CURRENT_BINARY_DIR}/repro_metadata_py.cmake")
+
 # The man pages must not drift away from the implementation.  The build ships
 # the rendered roff pages (kept in step by `xtb/landscape-man-render`), and
 # `landscape_man_check.py` gates the **content** of the AsciiDoc sources:

@@ -336,12 +336,20 @@ set_target_properties(
 # (KERNEL32 and msvcrt remain, both part of Windows), and the 16 MiB stack is
 # the conda-recipe value the upstream Windows build uses.  The OpenMP archive
 # comes from the `OpenMP_gomp_LIBRARY` override above.
+#
+# `--no-insert-timestamp` removes the only input of the PE image that is not
+# the build itself: `ld` stamps the current time into `TimeDateStamp` of the
+# COFF header, and two clean builds of one commit differed in nothing but those
+# bytes (measured, report 209).  The field is zero instead - no loader reads it
+# and it carries no version information - so the image is a function of its
+# inputs only.
 if(WIN32)
   target_link_options(
     ${XTB_EXE_NAME}
     PRIVATE
     "-static"
     "-Wl,--stack=16777216"
+    "-Wl,--no-insert-timestamp"
   )
 endif()
 
