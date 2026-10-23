@@ -119,19 +119,33 @@ jobs:
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
           Copy-Item '.\build\oxtb.exe' $dist -Force
 
-          # BLA_VENDOR=Intel10_64lp can link MKL component libraries rather than
-          # mkl_rt.dll. Therefore mkl_rt.dll is optional, not a build requirement.
-          # Find Intel runtime DLLs in the installed oneAPI tree and copy common
-          # runtime dependencies if present.
-          $roots = @(
-            $env:MKLROOT,
-            'C:\Program Files (x86)\Intel\oneAPI\compiler',
-            'C:\Program Files (x86)\Intel\oneAPI\mkl'
-          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+          # MKL component linking needs versioned DLLs such as
+          # mkl_intel_thread.2.dll and mkl_core.2.dll. Copy the MKL runtime
+          # DLL set (not just mkl_rt.dll), plus Intel OpenMP and Fortran runtimes.
+          $oneApi = 'C:\Program Files (x86)\Intel\oneAPI'
+          $mklRoots = @($env:MKLROOT, (Join-Path $oneApi 'mkl\latest')) |
+            Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+          foreach ($root in $mklRoots) {
+            foreach ($subdir in @('redist\intel64', 'bin', 'redist\intel64_win')) {
+              $dir = Join-Path $root $subdir
+              if (Test-Path $dir) {
+                Get-ChildItem -Path $dir -File -Filter 'mkl_*.dll' -ErrorAction SilentlyContinue |
+                  ForEach-Object {
+                    $destination = Join-Path $dist $_.Name
+                    if (-not (Test-Path $destination)) { Copy-Item $_.FullName $destination -Force }
+                  }
+              }
+            }
+          }
 
-          $wanted = @('mkl_rt.dll', 'libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
-          foreach ($root in $roots) {
-            foreach ($name in $wanted) {
+          $runtimeRoots = @(
+            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
+            (Join-Path $oneApi 'compiler\latest\bin'),
+            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler')
+          ) | Where-Object { Test-Path $_ } | Select-Object -Unique
+          $runtimeNames = @('libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
+          foreach ($root in $runtimeRoots) {
+            foreach ($name in $runtimeNames) {
               Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
                 ForEach-Object {
                   $destination = Join-Path $dist $_.Name
@@ -140,8 +154,11 @@ jobs:
             }
           }
 
-          # Show what was collected. Do not fail solely because mkl_rt.dll is
-          # absent: the selected MKL interface may use component libraries.
+          # Fail early if the exact DLL from the reported error was not packaged.
+          $threadDll = Get-ChildItem -Path $dist -Filter 'mkl_intel_thread*.dll' -File -ErrorAction SilentlyContinue
+          if (-not $threadDll) {
+            throw 'MKL threading DLL was not found in oneAPI runtime directories; inspect MKLROOT and the installation layout.'
+          }
           Get-ChildItem $dist -File | Select-Object Name, Length
           Copy-Item '.\build\share' $dist -Recurse -Force
 
