@@ -1,4 +1,4 @@
-name: Build oxtb.exe (Windows)
+name: Build oxtb.exe with Intel MKL (Windows)
 
 on:
   workflow_dispatch:
@@ -16,9 +16,10 @@ jobs:
         with:
           msystem: UCRT64
           update: true
+          # Zastąpiono mingw-w64-ucrt-x86_64-openblas pakietem mkl
           install: >-
             mingw-w64-ucrt-x86_64-gcc-fortran
-            mingw-w64-ucrt-x86_64-openblas
+            mingw-w64-ucrt-x86_64-mkl
             mingw-w64-ucrt-x86_64-cmake
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-git
@@ -26,10 +27,11 @@ jobs:
 
       - name: Configure
         run: |
+          # Zmieniono dostawcę BLAS na Intel MKL (MKL)
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG" \
-                -DBLA_VENDOR=OpenBLAS \
+                -DCMAKE_Fortran_FLAGS_RELEASE="-O3 -DNDEBUG -march=skylake" \
+                -DBLA_VENDOR=MKL \
                 -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
                 -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
 
@@ -45,8 +47,8 @@ jobs:
         run: |
           mkdir dist
           cp build/oxtb.exe dist/
-          # Kopiowanie zestawu bibliotek runtime wymaganych przez program i OpenBLAS
-          cp /ucrt64/bin/libopenblas.dll dist/
+          # Kopiowanie bibliotek runtime specyficznych dla Intel MKL oraz gfortran
+          cp /ucrt64/bin/libmkl_rt.dll dist/
           cp /ucrt64/bin/libgfortran-5.dll dist/
           cp /ucrt64/bin/libquadmath-0.dll dist/
           cp /ucrt64/bin/libwinpthread-1.dll dist/
@@ -55,5 +57,5 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: oxtb-windows-x64-standalone
+          name: oxtb-windows-x64-mkl-standalone
           path: dist/
