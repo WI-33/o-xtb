@@ -1,66 +1,141 @@
-name: Build oxtb.exe (Windows)
+# Experimental native Windows build of o-xtb with Intel oneMKL.
+# Start manually from Actions -> Windows MKL -> Run workflow.
+# This deliberately leaves windows-cmake.yml (OpenBLAS) unchanged.
+name: Windows MKL (experimental)
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: windows-latest
+    timeout-minutes: 90
     defaults:
       run:
-        shell: msys2 {0}
+        shell: pwsh
+
     steps:
-      - uses: actions/checkout@v4.2.2
+      - name: Checkout
+        uses: actions/checkout@v5
 
-      - uses: msys2/setup-msys2@v2
-        with:
-          msystem: UCRT64
-          update: true
-          install: >-
-            mingw-w64-ucrt-x86_64-gcc-fortran
-            mingw-w64-ucrt-x86_64-mkl
-            mingw-w64-ucrt-x86_64-cmake
-            mingw-w64-ucrt-x86_64-ninja
-            mingw-w64-ucrt-x86_64-git
-            mingw-w64-ucrt-x86_64-python
-
-      - name: Configure
+      # Installs the Intel oneAPI HPC Toolkit, which provides ifx and oneMKL.
+      # Installer availability/winget metadata can change; this step verifies
+      # the required tools instead of silently falling back to OpenBLAS.
+      - name: Install Intel oneAPI HPC Toolkit
         run: |
-          # Jawnym wymuszeniem flag kompilacji i linkera omijamy błędy wewnętrzne skryptów CMake w xtb.
-          # Flaga -march=skylake odblokowuje pełną moc instrukcji AVX2 dla i7-6820HQ.
-          cmake -S . -B build -G Ninja \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_Fortran_FLAGS="-O3 -DNDEBUG -march=skylake" \
-                -DCMAKE_C_FLAGS="-O3 -DNDEBUG -march=skylake" \
-                -DEXTERNAL_BLAS=ON \
-                -DEXTERNAL_LAPACK=ON \
-                -DBlas_F90_INTERFACE=gfortran \
-                -DBLAS_LIBRARIES="-lmkl_rt" \
-                -DLAPACK_LIBRARIES="-lmkl_rt" \
-                -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
-                -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
+          $ErrorActionPreference = 'Stop'
+          winget install --id Intel.OneAPI.HPCToolkit --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) {
+            throw "winget could not install Intel oneAPI HPC Toolkit (exit $LASTEXITCODE). See the step log; no OpenBLAS fallback is attempted."
+          }
+
+      - name: Initialize oneAPI environment and verify compiler/MKL
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
+          if errorlevel 1 exit /b 1
+          where ifx
+          if errorlevel 1 exit /b 1
+          if not defined MKLROOT exit /b 1
+          if not exist "%MKLROOT%\lib\mkl_rt.lib" exit /b 1
+          echo MKLROOT=%MKLROOT%>>%GITHUB_ENV%
+          echo PATH=%PATH%>>%GITHUB_ENV%
+          echo LIB=%LIB%>>%GITHUB_ENV%
+          echo INCLUDE=%INCLUDE%>>%GITHUB_ENV%
+
+      - name: Install CMake and Ninja
+        run: |
+          python -m pip install --upgrade cmake ninja
+
+      # This source tree currently adds GNU ld flags (-static and -Wl,...) to
+      # every WIN32 build. Those flags are not valid for the native Intel/MSVC
+      # linker, so narrow that block to GNU/MinGW builds. The change is applied
+      # only in the CI checkout and does not modify the repository.
+      - name: Make Windows linker flags compiler-specific
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import pathlib, re
+          p = pathlib.Path("CMakeLists.txt")
+          s = p.read_text(encoding="utf-8")
+          pattern = re.compile(r'if\(WIN32\)\s+target_link_options\(\s*\$\{XTB_EXE_NAME\}\s+PRIVATE\s+"-static"\s+"-Wl,--stack=16777216"\s+\)\s+endif\(\)', re.M)
+          replacement = '''if(WIN32 AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")
+            target_link_options(
+              ${XTB_EXE_NAME}
+              PRIVATE
+              "-static"
+              "-Wl,--stack=16777216"
+            )
+          endif()'''
+          s2, n = pattern.subn(replacement, s, count=1)
+          if n != 1:
+              raise SystemExit("Expected GNU-only Windows linker block not found; refusing to patch.")
+          p.write_text(s2, encoding="utf-8", newline="")
+          '@ | Set-Content -Encoding ascii patch_windows_link.py
+          python patch_windows_link.py
+          if ($LASTEXITCODE -ne 0) { throw 'CMake linker patch failed.' }
+
+      - name: Initialize MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure with Intel Fortran and MKL
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_Fortran_COMPILER=ifx `
+            -DCMAKE_C_COMPILER=icx `
+            '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG' `
+            -DBLA_VENDOR=Intel10_64lp `
+            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
+            -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 
       - name: Build
-        run: cmake --build build -j
+        run: |
+          cmake --build build --parallel 2
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
 
       - name: Smoke test (water, GFN2 single point)
         run: |
-          printf '3\nwater\nO 0.0 0.0 0.0\nH 0.758602 0.0 -0.504284\nH -0.758602 0.0 -0.504284\n' > water.xyz
-          ./build/oxtb.exe water.xyz --sp --gfn 2
+          @'
+          3
+          water
+          O 0.0 0.0 0.0
+          H 0.758602 0.0 -0.504284
+          H -0.758602 0.0 -0.504284
+          '@ | Set-Content -Encoding ascii water.xyz
+          .\build\oxtb.exe water.xyz --sp --gfn 2
+          if ($LASTEXITCODE -ne 0) { throw 'GFN2 water smoke test failed.' }
 
-      - name: Prepare standalone distribution folder
+      - name: Check executable dependencies
         run: |
-          mkdir dist
-          cp build/oxtb.exe dist/
-          # Kopiowanie biblioteki uruchomieniowej Intel MKL oraz niezbędnego zestawu DLL z GCC
-          cp /ucrt64/bin/libmkl_rt.dll dist/
-          cp /ucrt64/bin/libgfortran-5.dll dist/
-          cp /ucrt64/bin/libquadmath-0.dll dist/
-          cp /ucrt64/bin/libwinpthread-1.dll dist/
-          cp /ucrt64/bin/libgomp-1.dll dist/
-          cp /ucrt64/bin/libgcc_s_ucrt-1.dll dist/ || true
+          $ErrorActionPreference = 'Stop'
+          if (-not (Test-Path '.\build\oxtb.exe')) { throw 'oxtb.exe was not produced.' }
+          # Keep the runtime DLLs with the artifact. MKL's Windows runtime is
+          # dynamically linked; include mkl_rt.dll and the Intel OpenMP runtime.
+          $dist = Join-Path $PWD 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item '.\build\oxtb.exe' $dist
+          $dlls = @(
+            (Join-Path $env:MKLROOT 'bin\mkl_rt.dll'),
+            (Join-Path $env:MKLROOT 'bin\intel64\mkl_rt.dll'),
+            'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll',
+            'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\compiler\libiomp5md.dll'
+          )
+          foreach ($dll in $dlls) {
+            if (Test-Path $dll) { Copy-Item $dll $dist -Force }
+          }
+          if (-not (Get-ChildItem $dist -Filter mkl_rt.dll -Recurse)) {
+            throw 'mkl_rt.dll was not found in the expected oneAPI locations; inspect MKLROOT and runtime layout.'
+          }
+          Copy-Item '.\build\share' $dist -Recurse -Force
 
-      - uses: actions/upload-artifact@v4.6.1
+      - uses: actions/upload-artifact@v4
         with:
-          name: oxtb-windows-x64-standalone
+          name: oxtb-windows-x64-mkl-experimental
           path: dist/
+          if-no-files-found: error
