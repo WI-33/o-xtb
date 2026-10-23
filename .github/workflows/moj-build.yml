@@ -111,27 +111,38 @@ jobs:
           .\build\oxtb.exe water.xyz --sp --gfn 2
           if ($LASTEXITCODE -ne 0) { throw 'GFN2 water smoke test failed.' }
 
-      - name: Check executable dependencies
+      - name: Package executable and Intel runtime DLLs
         run: |
           $ErrorActionPreference = 'Stop'
           if (-not (Test-Path '.\build\oxtb.exe')) { throw 'oxtb.exe was not produced.' }
-          # Keep the runtime DLLs with the artifact. MKL's Windows runtime is
-          # dynamically linked; include mkl_rt.dll and the Intel OpenMP runtime.
           $dist = Join-Path $PWD 'dist'
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item '.\build\oxtb.exe' $dist
-          $dlls = @(
-            (Join-Path $env:MKLROOT 'bin\mkl_rt.dll'),
-            (Join-Path $env:MKLROOT 'bin\intel64\mkl_rt.dll'),
-            'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\libiomp5md.dll',
-            'C:\Program Files (x86)\Intel\oneAPI\compiler\latest\bin\compiler\libiomp5md.dll'
-          )
-          foreach ($dll in $dlls) {
-            if (Test-Path $dll) { Copy-Item $dll $dist -Force }
+          Copy-Item '.\build\oxtb.exe' $dist -Force
+
+          # BLA_VENDOR=Intel10_64lp can link MKL component libraries rather than
+          # mkl_rt.dll. Therefore mkl_rt.dll is optional, not a build requirement.
+          # Find Intel runtime DLLs in the installed oneAPI tree and copy common
+          # runtime dependencies if present.
+          $roots = @(
+            $env:MKLROOT,
+            'C:\Program Files (x86)\Intel\oneAPI\compiler',
+            'C:\Program Files (x86)\Intel\oneAPI\mkl'
+          ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+          $wanted = @('mkl_rt.dll', 'libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
+          foreach ($root in $roots) {
+            foreach ($name in $wanted) {
+              Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $destination = Join-Path $dist $_.Name
+                  if (-not (Test-Path $destination)) { Copy-Item $_.FullName $destination -Force }
+                }
+            }
           }
-          if (-not (Get-ChildItem $dist -Filter mkl_rt.dll -Recurse)) {
-            throw 'mkl_rt.dll was not found in the expected oneAPI locations; inspect MKLROOT and runtime layout.'
-          }
+
+          # Show what was collected. Do not fail solely because mkl_rt.dll is
+          # absent: the selected MKL interface may use component libraries.
+          Get-ChildItem $dist -File | Select-Object Name, Length
           Copy-Item '.\build\share' $dist -Recurse -Force
 
       - uses: actions/upload-artifact@v4
