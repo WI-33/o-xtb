@@ -26,13 +26,15 @@ jobs:
 
       - name: Configure
         run: |
-          # Przekazujemy biblioteki poprzez flagi linkera bezpośrednio do flag wykonawczych CMake.
-          # Wersja 'mkl_rt' automatycznie mapuje poprawne instrukcje AVX2 dla architektury Skylake.
+          # Jawnym wymuszeniem flag kompilacji i linkera omijamy błędy wewnętrzne skryptów CMake w xtb.
+          # Flaga -march=skylake odblokowuje pełną moc instrukcji AVX2 dla i7-6820HQ.
           cmake -S . -B build -G Ninja \
                 -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_Fortran_FLAGS_RELEASE="-O3 -DNDEBUG -march=skylake" \
-                -DCMAKE_EXE_LINKER_FLAGS="-lmkl_rt" \
-                -DCMAKE_SHARED_LINKER_FLAGS="-lmkl_rt" \
+                -DCMAKE_Fortran_FLAGS="-O3 -DNDEBUG -march=skylake" \
+                -DCMAKE_C_FLAGS="-O3 -DNDEBUG -march=skylake" \
+                -DEXTERNAL_BLAS=ON \
+                -DEXTERNAL_LAPACK=ON \
+                -DBlas_F90_INTERFACE=gfortran \
                 -DBLAS_LIBRARIES="-lmkl_rt" \
                 -DLAPACK_LIBRARIES="-lmkl_rt" \
                 -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF \
@@ -50,7 +52,7 @@ jobs:
         run: |
           mkdir dist
           cp build/oxtb.exe dist/
-          # Kopiowanie stabilnego runtime Intel MKL i bibliotek pomocniczych GCC
+          # Kopiowanie biblioteki uruchomieniowej Intel MKL oraz niezbędnego zestawu DLL z GCC
           cp /ucrt64/bin/libmkl_rt.dll dist/
           cp /ucrt64/bin/libgfortran-5.dll dist/
           cp /ucrt64/bin/libquadmath-0.dll dist/
