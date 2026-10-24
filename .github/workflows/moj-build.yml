@@ -1,6 +1,6 @@
-# Windows row: a native `oxtb.exe` build on `windows-latest` with MSYS2.
-# Highly optimized for Intel Core i7-6820HQ (Skylake architecture).
-name: Windows Skylake Build
+# Natywna kompilacja o-xtb na Windows przy użyciu Intel OneAPI (ifx) oraz Intel MKL.
+# Wersja z linkowaniem statycznym (brak problemów z brakującymi bibliotekami DLL).
+name: Windows Intel MKL Static Build
 on:
    push:
    pull_request:
@@ -8,88 +8,68 @@ on:
 env:
    BUILD_DIR: _build
 jobs:
-   mingw-ucrt64-cmake-build:
+   intel-mkl-cmake-build:
       runs-on: windows-latest
       steps:
          - name: Checkout code
-           uses: actions/checkout@v5
-         - name: Setup MSYS2
-           uses: msys2/setup-msys2@v2
-           with:
-            msystem: UCRT64
-            update: true
-            install: >-
-             git
-             mingw-w64-ucrt-x86_64-gcc-fortran
-             mingw-w64-ucrt-x86_64-openblas
-             mingw-w64-ucrt-x86_64-cmake
-             mingw-w64-ucrt-x86_64-ninja
-             mingw-w64-ucrt-x86_64-python
-         
-         # Konfiguracja zoptymalizowana pod i7-6820HQ (Skylake) z użyciem flag -O3, -march=skylake oraz -mtune=skylake
-         - name: Configure build
-           shell: msys2 {0}
-           run: >
-            cmake -B "$BUILD_DIR" -G Ninja
-            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF -DWITH_TESTS=ON
-            -DCMAKE_BUILD_TYPE=Release
-            -DCMAKE_Fortran_FLAGS_RELEASE="-O3 -march=skylake -mtune=skylake -DNDEBUG"
-            -DBLA_VENDOR=OpenBLAS
-            -DTEST_DRIVE_BUILD_TESTING=OFF
-         
-         - name: Build project
-           shell: msys2 {0}
-           run: |
-            set -eo pipefail
-            cmake --build "$BUILD_DIR" 2>&1 | tee build.log
-            if grep -qiE 'Error: |Fatal' build.log; then
-              echo "::error::the build log contains an 'Error:' or 'Fatal' line"
-              exit 1
-            fi
-         
-         # Testy uruchamiane na 4 wątkach, aby sprawdzić stabilność OpenMP na architekturze Skylake
-         - name: Run the bounded test subset
-           shell: msys2 {0}
-           run: |
-             log="$(cygpath -u "$RUNNER_TEMP")/ctest.log"
-             summary="$(cygpath -u "$GITHUB_STEP_SUMMARY")"
-             set +e
-             ctest --output-on-failure \
-               -R '^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$' \
-               -E 'o-xtb/docking|xtb/CAPI|mctc-lib/ncoord' 2>&1 | tee "$log"
-             status=${PIPESTATUS}
-             {
-               echo "### Unit tests: exit ${status}"
-               if [ "${status}" -ne 0 ]; then
-                 echo '```'
-                 sed -n '/The following tests FAILED/,p' "\$log" | head -40
-                 echo '```'
-               fi
-             } >> "$summary"
-             if [ "${status}" -ne 0 ]; then
-               sed -n '/The following tests FAILED/,$p' "$log" | head -40 | \
-                 while IFS= read -r line; do
-                   printf '::error::%s\n' "$line"
-                 done
-             fi
-             exit "${status}"
-           working-directory: ${{ env.BUILD_DIR }}
-           env:
-            OMP_NUM_THREADS: 4
+           uses: actions/checkout@v4
 
-         # Przygotowanie struktury katalogu dystrybucyjnego (paczkowanie) przed wysłaniem
-         - name: Package artifacts
-           shell: msys2 {0}
+         # Instalacja oficjalnego kompilatora Intel Fortran (ifx) oraz biblioteki Intel MKL
+         - name: Install Intel OneAPI (ifx & MKL)
+           uses: intel-analytics/oneapi-src@v1
+           with:
+             oneapi-components: |
+               intel.oneapi.win.fortran-compiler
+               intel.oneapi.win.mkl
+
+         # Konfiguracja kompilacji z wymuszeniem linkowania statycznego (BLA_STATIC=ON)
+         # Flagi /MT oraz /Qopenmp-link:static dołączają biblioteki uruchomieniowe do pliku .exe
+         # Dodano także flagę podnoszącą limit stosu (/link /STACK:16777216) zapobiegającą błędom Stack Overflow
+         - name: Configure build
+           shell: cmd
            run: |
-            mkdir -p dist/bin dist/share/o-xtb
-            cp "$BUILD_DIR/oxtb.exe" dist/bin/
-            cp param_*.txt dist/share/o-xtb/ 2>/dev/null || true
-            cp .param_gfnff.xtb dist/share/o-xtb/ 2>/dev/null || true
+            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+            cmake -B "%BUILD_DIR%" -G Ninja ^
+            -DCMAKE_Fortran_COMPILER=ifx ^
+            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF -DWITH_TESTS=ON ^
+            -DBUILD_SHARED_LIBS=OFF ^
+            -DBLA_STATIC=ON ^
+            -DCMAKE_BUILD_TYPE=Release ^
+            -DCMAKE_Fortran_FLAGS_RELEASE="/O3 /QxCORE-AVX2 /MT /Qopenmp-link:static /DNDEBUG" ^
+            -DCMAKE_EXE_LINKER_FLAGS="/link /STACK:16777216" ^
+            -DBLA_VENDOR=Intel10_64lp ^
+            -DTEST_DRIVE_BUILD_TESTING=OFF
+
+         # Kompilacja projektu
+         - name: Build project
+           shell: cmd
+           run: |
+            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+            cmake --build "%BUILD_DIR%" --parallel
+
+         # Uruchomienie testów (4 wątki)
+         - name: Run the bounded test subset
+           shell: cmd
+           run: |
+            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+            cd "%BUILD_DIR%"
+            set OMP_NUM_THREADS=4
+            ctest --output-on-failure -R "^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$" -E "o-xtb/docking|xtb/CAPI|mctc-lib/ncoord"
+           
+         # Przygotowanie struktury katalogu dla artefaktów (binaria + parametry)
+         - name: Package artifacts
+           shell: cmd
+           run: |
+            mkdir dist\bin
+            mkdir dist\share\o-xtb
+            xcopy /Y "%BUILD_DIR%\oxtb.exe" dist\bin\
+            xcopy /Y "param_*.txt" dist\share\o-xtb\ 2>nul || (exit 0)
+            xcopy /Y ".param_gfnff.xtb" dist\share\o-xtb\ 2>nul || (exit 0)
          
-         # Krok, który wysyła gotową paczkę jako Artifact na GitHubie
+         # Wysłanie zoptymalizowanej, niezależnej paczki jako gotowy artefakt do pobrania
          - name: Upload Windows executable
            uses: actions/upload-artifact@v4
            with:
-            name: oxtb-windows-skylake
+            name: oxtb-windows-intel-mkl-static
             path: dist/
             if-no-files-found: error
