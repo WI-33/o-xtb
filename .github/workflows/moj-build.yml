@@ -1,206 +1,78 @@
-# Native Windows x64 build of o-xtb with Intel ifx + oneMKL.
-# Uses a 128 MiB executable stack plus heap-array mitigation for the TS Hessian stack-overflow report.
-# Trigger manually: GitHub Actions -> Windows MKL stack fix -> Run workflow.
-name: Windows MKL stack fix
-
+# Windows row: a native `oxtb.exe` build on `windows-latest` with MSYS2.
+# Highly optimized for Intel Core i7-6820HQ (Skylake architecture).
+name: Windows Skylake Build
 on:
-  workflow_dispatch:
-
-permissions:
-  contents: read
-
+   push:
+   pull_request:
+   workflow_dispatch:
+env:
+   BUILD_DIR: _build
 jobs:
-  build:
-    runs-on: windows-latest
-    timeout-minutes: 120
-    defaults:
-      run:
-        shell: pwsh
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v5
-
-      - name: Install Intel oneAPI HPC Toolkit
-        run: |
-          $ErrorActionPreference = 'Stop'
-          winget install --id Intel.OneAPI.HPCToolkit --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-          if ($LASTEXITCODE -ne 0) {
-            throw "Could not install Intel oneAPI HPC Toolkit (exit $LASTEXITCODE)."
-          }
-
-      - name: Initialize oneAPI environment and verify compiler/MKL
-        shell: cmd
-        run: |
-          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
-          if errorlevel 1 exit /b 1
-          where ifx
-          if errorlevel 1 exit /b 1
-          if not defined MKLROOT exit /b 1
-          if not exist "%MKLROOT%\lib\mkl_rt.lib" exit /b 1
-          echo MKLROOT=%MKLROOT%>>%GITHUB_ENV%
-          echo PATH=%PATH%>>%GITHUB_ENV%
-          echo LIB=%LIB%>>%GITHUB_ENV%
-          echo INCLUDE=%INCLUDE%>>%GITHUB_ENV%
-
-      - name: Install CMake and Ninja
-        run: |
-          python -m pip install --upgrade cmake ninja
-          if ($LASTEXITCODE -ne 0) { throw 'Could not install CMake/Ninja.' }
-
-      # The repository has GNU ld flags under WIN32. Restrict those flags to GNU.
-      - name: Make Windows linker flags compiler-specific
-        run: |
-          $ErrorActionPreference = 'Stop'
-          @'
-          import pathlib, re
-          p = pathlib.Path("CMakeLists.txt")
-          source = p.read_text(encoding="utf-8-sig")
-          lines = source.splitlines(keepends=True)
-          stack = []
-          targets = []
-          for i, line in enumerate(lines):
-              stripped = line.strip()
-              m = re.match(r"if\s*\((.*?)\)", stripped, re.I)
-              if m:
-                  stack.append({"start": i, "condition": m.group(1).strip(), "depth": len(stack)})
-              if re.match(r"endif\s*\(", stripped, re.I) and stack:
-                  block = stack.pop()
-                  block_text = "".join(lines[block["start"]:i + 1])
-                  cond = re.sub(r"\s+", "", block["condition"]).upper()
-                  has_gnu_flags = ("-Wl," in block_text or '"-static"' in block_text or "-static" in block_text)
-                  if cond == "WIN32" and has_gnu_flags:
-                      targets.append(block["start"])
-          changed = 0
-          for i in targets:
-              indent = re.match(r"\s*", lines[i]).group(0)
-              lines[i] = indent + 'if(WIN32 AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")' + ("\r\n" if lines[i].endswith("\r\n") else "\n" if lines[i].endswith("\n") else "")
-              changed += 1
-          result = "".join(lines)
-          # Idempotent: accept a previously patched source, but never silently
-          # continue if GNU linker flags remain in an unguarded WIN32 block.
-          if changed == 0:
-              if re.search(r"if\s*\(\s*WIN32\s*\)(?:(?!endif\s*\().)*(?:-Wl,|-static)(?:(?!endif\s*\().)*endif\s*\(", result, re.I | re.S):
-                  raise SystemExit("Found GNU linker flags in an unguarded WIN32 block; inspect CMakeLists.txt.")
-              print("No unguarded GNU linker block needed patching (already fixed or not present).")
-          else:
-              print(f"Restricted {changed} GNU linker block(s) to the GNU Fortran compiler.")
-          p.write_text(result, encoding="utf-8", newline="")
-          '@ | Set-Content -Encoding ascii patch_windows_link.py
-          python patch_windows_link.py
-          if ($LASTEXITCODE -ne 0) { throw 'CMake linker patch failed.' }
-
-      - name: Initialize MSVC environment
-        uses: ilammy/msvc-dev-cmd@v1
-
-      - name: Configure with Intel Fortran and MKL (128 MiB stack + heap arrays)
-        run: |
-          $ErrorActionPreference = 'Stop'
-          cmake -S . -B build -G Ninja `
-            -DCMAKE_BUILD_TYPE=Release `
-            -DCMAKE_Fortran_COMPILER=ifx `
-            -DCMAKE_C_COMPILER=icx `
-            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728' `
-            '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG /heap-arrays' `
-            -DBLA_VENDOR=Intel10_64lp `
-            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
-            -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
-          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
-
-      - name: Build
-        run: |
-          cmake --build build --parallel 2 --verbose 2>&1 | Tee-Object -FilePath build.log
-          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-          if (-not (Test-Path '.\build\oxtb.exe')) { throw 'build\oxtb.exe was not produced.' }
-
-      - name: Smoke test (water, GFN2 single point)
-        env:
-          KMP_STACKSIZE: 64m
-          OMP_STACKSIZE: 64m
-          OMP_NUM_THREADS: '1'
-        run: |
-          $ErrorActionPreference = 'Stop'
-          @'
-          3
-          water
-          O 0.0 0.0 0.0
-          H 0.758602 0.0 -0.504284
-          H -0.758602 0.0 -0.504284
-          '@ | Set-Content -Encoding ascii water.xyz
-          .\build\oxtb.exe water.xyz --sp --gfn 2 2>&1 | Tee-Object -FilePath smoke-test.log
-          if ($LASTEXITCODE -ne 0) { throw 'GFN2 water smoke test failed.' }
-
-      - name: Package minimal runtime and launch helper
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $exe = '.\build\oxtb.exe'
-          if (-not (Test-Path $exe)) { throw 'oxtb.exe was not produced.' }
-          if (-not (Test-Path '.\build\share')) { throw 'build\share is missing; refusing to create incomplete package.' }
-
-          $dist = Join-Path $PWD 'dist'
-          New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item $exe $dist -Force
-          Copy-Item '.\build\share' $dist -Recurse -Force
-
-          # The three MKL DLLs requested for this installation.
-          $oneApi = 'C:\Program Files (x86)\Intel\oneAPI'
-          $mklRoots = @($env:MKLROOT, (Join-Path $oneApi 'mkl\latest')) |
-            Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-          $requiredMklDlls = @('mkl_avx2.2.dll', 'mkl_core.2.dll', 'mkl_intel_thread.2.dll')
-          foreach ($name in $requiredMklDlls) {
-            $found = $null
-            foreach ($root in $mklRoots) {
-              $found = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($found) { break }
-            }
-            if (-not $found) { throw "Required MKL DLL '$name' was not found under MKLROOT/oneAPI MKL." }
-            Copy-Item $found.FullName (Join-Path $dist $name) -Force
-          }
-
-          # Copy only common Intel runtime dependencies if present; avoid copying the entire oneAPI tree.
-          $runtimeRoots = @(
-            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
-            (Join-Path $oneApi 'compiler\latest\bin')
-          ) | Where-Object { Test-Path $_ } | Select-Object -Unique
-          $runtimeNames = @('libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
-          foreach ($name in $runtimeNames) {
-            foreach ($root in $runtimeRoots) {
-              $runtime = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($runtime) {
-                Copy-Item $runtime.FullName (Join-Path $dist $name) -Force
-                break
-              }
-            }
-          }
-
-          @'
-          @echo off
-          setlocal
-          set "KMP_STACKSIZE=64m"
-          set "OMP_STACKSIZE=64m"
-          if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=1"
-          "%~dp0oxtb.exe" %*
-          exit /b %errorlevel%
-          '@ | Set-Content -Encoding ascii (Join-Path $dist 'run-oxtb.bat')
-
-          @'
-          o-xtb Windows x64 / Intel ifx + oneMKL
-          This package includes oxtb.exe, share data, the requested MKL DLLs,
-          and any common Intel runtime DLLs found by the build workflow.
-          Run calculations with run-oxtb.bat so KMP_STACKSIZE and OMP_STACKSIZE
-          are set to 64 MiB. Example: run-oxtb.bat input.xyz --sp --gfn 2
-          Stack/heap changes are a mitigation, not a verified fix for every TS Hessian.
-          '@ | Set-Content -Encoding utf8 (Join-Path $dist 'README-RUNTIME.txt')
-
-          Write-Host 'Package contents:'
-          Get-ChildItem $dist -Recurse -File | Select-Object FullName, Length
-          foreach ($name in @('oxtb.exe','mkl_avx2.2.dll','mkl_core.2.dll','mkl_intel_thread.2.dll','run-oxtb.bat')) {
-            if (-not (Test-Path (Join-Path $dist $name))) { throw "Package is missing $name" }
-          }
-
-      - name: Upload Windows x64 artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: oxtb-windows-x64-mkl-stackfix
-          path: dist/
-          if-no-files-found: error
+   mingw-ucrt64-cmake-build:
+      runs-on: windows-latest
+      steps:
+         - name: Checkout code
+           uses: actions/checkout@v5
+         - name: Setup MSYS2
+           uses: msys2/setup-msys2@v2
+           with:
+            msystem: UCRT64
+            update: true
+            install: >-
+             git
+             mingw-w64-ucrt-x86_64-gcc-fortran
+             mingw-w64-ucrt-x86_64-openblas
+             mingw-w64-ucrt-x86_64-cmake
+             mingw-w64-ucrt-x86_64-ninja
+             mingw-w64-ucrt-x86_64-python
+         
+         # Konfiguracja zoptymalizowana pod i7-6820HQ (Skylake) z użyciem flag -O3, -march=skylake oraz -mtune=skylake
+         - name: Configure build
+           shell: msys2 {0}
+           run: >
+            cmake -B "$BUILD_DIR" -G Ninja
+            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF -DWITH_TESTS=ON
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_Fortran_FLAGS_RELEASE="-O3 -march=skylake -mtune=skylake -DNDEBUG"
+            -DBLA_VENDOR=OpenBLAS
+            -DTEST_DRIVE_BUILD_TESTING=OFF
+         
+         - name: Build project
+           shell: msys2 {0}
+           run: |
+            set -eo pipefail
+            cmake --build "$BUILD_DIR" 2>&1 | tee build.log
+            if grep -qiE 'Error: |Fatal' build.log; then
+              echo "::error::the build log contains an 'Error:' or 'Fatal' line"
+              exit 1
+            fi
+         
+         # Testy uruchamiane na 4 wątkach, aby sprawdzić stabilność OpenMP na architekturze Skylake
+         - name: Run the bounded test subset
+           shell: msys2 {0}
+           run: |
+             log="$(cygpath -u "$RUNNER_TEMP")/ctest.log"
+             summary="$(cygpath -u "$GITHUB_STEP_SUMMARY")"
+             set +e
+             ctest --output-on-failure \
+               -R '^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$' \
+               -E 'o-xtb/docking|xtb/CAPI|mctc-lib/ncoord' 2>&1 | tee "$log"
+             status=${PIPESTATUS[0]}
+             {
+               echo "### Unit tests: exit ${status}"
+               if [ "${status}" -ne 0 ]; then
+                 echo '```'
+                 sed -n '/The following tests FAILED/,p' "log" | head -40
+                 echo '```'
+               fi
+             } >> "$summary"
+             if [ "${status}" -ne 0 ]; then
+               sed -n '/The following tests FAILED/,$p' "$log" | head -40 | \
+                 while IFS= read -r line; do
+                   printf '::error::%s\n' "$line"
+                 done
+             fi
+             exit "${status}"
+           working-directory: ${{ env.BUILD_DIR }}
+           env:
+            OMP_NUM_THREADS: 4
