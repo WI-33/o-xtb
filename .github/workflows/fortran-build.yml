@@ -19,10 +19,15 @@ jobs:
       # on x86-64 with the same compiler, so it must not gate the build.
       continue-on-error: ${{ matrix.os == 'ubuntu-24.04-arm' }}
       runs-on: ${{ matrix.os }}
+      # Runner labels are pinned, never `-latest` (report 212): GitHub announced
+      # that `ubuntu-latest` moves to Ubuntu 26 from 2026-10-19, so an unpinned
+      # label can swap the whole toolchain without a commit here - and with it the
+      # compiler that report 209's byte-for-byte reproducibility was measured on.
+      # `ubuntu-24.04` is what `ubuntu-latest` resolves to today.
       strategy:
          fail-fast: false
          matrix:
-            os: [ubuntu-latest, ubuntu-24.04-arm]
+            os: [ubuntu-24.04, ubuntu-24.04-arm]
             fc: [gfortran-14]
             cc: [gcc-14]
             build: [Release, Debug]
@@ -35,15 +40,19 @@ jobs:
             exclude:
               - os: ubuntu-24.04-arm
                 build: Release
+      # Every `uses:` is a full commit SHA with the release it is, because a moved
+      # tag is arbitrary code on a runner that holds a token (report 212).  The
+      # runtime of each pin is stated next to it and was read from that release's
+      # own `action.yml`.
       steps:
          - name: Checkout code
-           uses: actions/checkout@v4
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
          - name: Setup Python
-           uses: actions/setup-python@v5
+           uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0 node24
            with:
             python-version: 3.x
-         - name: Install OpenBLAS (ubuntu-latest)
-           if: ${{ matrix.os == 'ubuntu-latest' || contains(matrix.os, 'ubuntu-24.04') }}
+         - name: Install OpenBLAS (Ubuntu)
+           if: ${{ contains(matrix.os, 'ubuntu') }}
            run: |
             sudo apt-get install libopenblas-dev
          - name: Install CMake
@@ -116,18 +125,18 @@ jobs:
       strategy:
          fail-fast: false
          matrix:
-            os: [ubuntu-latest]
+            os: [ubuntu-24.04]
             fc: [gfortran-14]
             cc: [gcc-14]
       steps:
          - name: Checkout code
-           uses: actions/checkout@v4
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
          - name: Setup Python
-           uses: actions/setup-python@v5
+           uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0 node24
            with:
             python-version: 3.x
-         - name: Install OpenBLAS (ubuntu-latest)
-           if: ${{ matrix.os == 'ubuntu-latest' || contains(matrix.os, 'ubuntu-24.04') }}
+         - name: Install OpenBLAS (Ubuntu)
+           if: ${{ contains(matrix.os, 'ubuntu') }}
            run: |
             sudo apt-get install libopenblas-dev
          - name: Install CMake

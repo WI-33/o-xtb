@@ -5842,7 +5842,7 @@ BANNER_AFFILIATION = [
 ]
 BANNER_TEXT = BANNER_DESCRIPTION + BANNER_AFFILIATION
 BANNER_VERSION = [
-    "* OxTB version 0.3.0 *",
+    "* OxTB version 0.3.1 *",
     "* xTB version 6.7.1 *",
 ]
 BANNER_LEGAL = [
@@ -5948,7 +5948,7 @@ def check_banner(exe, inp, rundir):
     for line in lines:
         if line.strip() == BANNER_OLD:
             fail("the old boxed xTB banner is still printed", output)
-    print("--version banner: %d centred lines, product 0.3.0, engine 6.7.1, "
+    print("--version banner: %d centred lines, product 0.3.1, engine 6.7.1, "
           "build date %s, commit %s"
           % (len(block), date, banner_commit or "none"))
 

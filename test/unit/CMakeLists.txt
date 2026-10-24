@@ -3713,7 +3713,7 @@ if(NOT EXISTS "${RUNDIR}/landscape_sp.json")
   message(FATAL_ERROR "--ljson with the default run type wrote no landscape_sp.json\n${output}")
 endif()
 file(READ "${RUNDIR}/landscape_sp.json" document)
-foreach(needle "\"format\": 2" "\"task\": \"sp\"" "\"n_atoms\": 3" "\"energy\": " "\"geometry\": {" "\"unit\": \"bohr\"" "\"provenance\": {" "\"oxtb_version\": \"0.3.0\"" "\"engine_version\": \"6.7.1\"" "\"input_file\": ")
+foreach(needle "\"format\": 2" "\"task\": \"sp\"" "\"n_atoms\": 3" "\"energy\": " "\"geometry\": {" "\"unit\": \"bohr\"" "\"provenance\": {" "\"oxtb_version\": \"0.3.1\"" "\"engine_version\": \"6.7.1\"" "\"input_file\": ")
   string(FIND "${document}" "${needle}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "landscape_sp.json lacks ${needle}\n${document}")
@@ -4782,7 +4782,7 @@ add_test("xtb/landscape-dock-gfn-value"
 
 # The startup banner (`src/header.f90`, `docs/_simplify-recon/116-oxtb-banner.md`)
 # replaced the boxed `x T B` banner with the OxTB wordmark, the product version
-# 0.3.0, the engine version and the legal notice of GPL-3.0 section 5(d).
+# 0.3.1, the engine version and the legal notice of GPL-3.0 section 5(d).
 # Nothing covered the banner text before: `xtb/Argparser_print_version` ran
 # `--version` without looking at its output, so reverting `src/header.f90` left
 # every test green.  The check pins the centred block line by line (wordmark

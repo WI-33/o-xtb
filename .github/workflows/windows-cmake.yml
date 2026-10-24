@@ -1,4 +1,4 @@
-# Windows row: a native `oxtb.exe` build on `windows-latest` with MSYS2.
+# Windows row: a native `oxtb.exe` build on `windows-2025` with MSYS2.
 #
 # It is a separate workflow instead of a job of
 # `.github/workflows/fortran-build.yml` because it needs a different runner, a
@@ -45,12 +45,17 @@ jobs:
       # the cross tree links netlib BLAS where this job links MSYS2 OpenBLAS, so
       # the first gating run is also the first cross-BLAS-vendor check of the
       # 12-decimal energy assertion of `xtb/xtbpath-default`.
-      runs-on: windows-latest
+      runs-on: windows-2025
       steps:
          - name: Checkout code
-           uses: actions/checkout@v5
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
          - name: Setup MSYS2
-           uses: msys2/setup-msys2@v2
+           # Same pin as `release.yml` (report 212): v2.33.0 is the current `@v2`
+           # tip and runs on node24.  Its package cache stays enabled here - it is
+           # the v2 cache service and a failure to restore is downgraded to a
+           # warning (report 211 section 6), so this row cannot hard-fail on it,
+           # unlike the `v2.9.0` pin the release job carried.
+           uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0 node24
            with:
             msystem: UCRT64
             # `update: true` upgrades the installation before installing:

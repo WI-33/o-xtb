@@ -22,8 +22,10 @@ on:
       tags: ['v*']
    # A dry run: it builds, tests, packages and checksums exactly like a tag push
    # and prints the release notes, but creates no release at all
-   # (`inputs.publish` stays false).  Dispatching it *with* `publish: true` on a
-   # tag ref is also how an existing draft is published after a review.
+   # (`inputs.publish` stays false).  It also proves the preconditions of the
+   # release step, which it used to skip entirely (report 215).  Dispatching it
+   # *with* `publish: true` on a tag ref is also how an existing draft is
+   # published after a review.
    workflow_dispatch:
       inputs:
          publish:
@@ -58,7 +60,7 @@ jobs:
    # inputs to the two builders.  Doing it here rather than three times means the
    # tag/version/epoch are decided before anything is built.
    prepare:
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
       timeout-minutes: 10
       outputs:
          version: ${{ steps.version.outputs.version }}
@@ -69,7 +71,7 @@ jobs:
          PUBLISH_INPUT: ${{ inputs.publish }}
       steps:
          - name: Checkout code
-           uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
            with:
             path: ${{ env.SRC_DIR }}
          # The version comes from the tag and is verified, not assumed: a release
@@ -117,7 +119,7 @@ jobs:
    # only place in CI that runs it; `fortran-build.yml` builds shared trees.
    linux-static:
       needs: prepare
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
       timeout-minutes: 120
       env:
          VERSION: ${{ needs.prepare.outputs.version }}
@@ -125,7 +127,7 @@ jobs:
          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.epoch }}
       steps:
          - name: Checkout code
-           uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
            with:
             path: ${{ env.SRC_DIR }}
          # `apt` rather than `pip install cmake ninja`: the grader-like
@@ -278,7 +280,7 @@ jobs:
               *) printf '%s\n' "${ldd_out}" >&2; echo "::error::not statically linked"; exit 1 ;;
             esac
          - name: Upload the tarball as a workflow artifact
-           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+           uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 node24
            with:
             name: linux-x86_64
             path: dist/*.tar.gz
@@ -296,7 +298,9 @@ jobs:
       # wins on reliability and loses on reproducibility: two runs of this job
       # on different days may carry different compilers.  The bytes are therefore
       # reproducible per runner image, not across images (report 209 section 5.3).
-      runs-on: windows-latest
+      # `windows-2025` is what `windows-latest` resolves to today (runner-images
+      # README), and a label move would change this job's compiler silently.
+      runs-on: windows-2025
       timeout-minutes: 120
       env:
          VERSION: ${{ needs.prepare.outputs.version }}
@@ -304,14 +308,31 @@ jobs:
          SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.epoch }}
       steps:
          - name: Checkout code
-           uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
            with:
             path: ${{ env.SRC_DIR }}
+         # Pinned by SHA like everything else in this file, but **not** the v2.9.0
+         # this job first carried: v2.9.0 (2023-06) bundles `@actions/cache` 1.0.9,
+         # whose only transport is the legacy cache REST API
+         # (`$ACTIONS_CACHE_URL/_apis/artifactcache/...`, no "twirp" code at all).
+         # That backend was retired, and v2.9.0's `restoreCache` has no error
+         # handling, so the answer to the dead endpoint failed the job before any
+         # package was installed (`Error: Cache service responded with 400`,
+         # report 211).  v2.9.0 also declares no `cache` input, so no input value
+         # could have avoided the request; the SHA below is the current `@v2` tip,
+         # and `windows-cmake.yml` now pins the same commit, where an unresponsive
+         # cache service is a warning instead of a hard failure.
+         #
+         # `cache: false` is the second half of the fix: the pacman package cache
+         # is an optimisation, and a release artifact must not depend on a cache
+         # service to be built.  It does not make the bytes reproducible across
+         # days - `update: true` still installs whatever the mirrors carry.
          - name: Setup MSYS2
-           uses: msys2/setup-msys2@f84a36b4009b96413f91c01441130855db9392e5 # v2.9.0
+           uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2.33.0
            with:
             msystem: UCRT64
             update: true
+            cache: false
             # As in `windows-cmake.yml`, plus `zip`: the archive is built by the
             # same shell on both platforms, and `zip` is not in the default
             # UCRT64 installation.
@@ -403,7 +424,7 @@ jobs:
             cd ..
             unzip -l "dist/${pkg}.zip"
          - name: Upload the zip as a workflow artifact
-           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+           uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 node24
            with:
             name: windows-x86_64
             path: dist/*.zip
@@ -413,7 +434,7 @@ jobs:
    # proves them; only the `gh` steps are gated.
    release:
       needs: [prepare, linux-static, windows-x86_64]
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
       timeout-minutes: 15
       env:
          VERSION: ${{ needs.prepare.outputs.version }}
@@ -423,9 +444,34 @@ jobs:
          # `gh` reads `GH_TOKEN`; `github.token` is the same narrowed token as
          # `secrets.GITHUB_TOKEN`, without the extra indirection.
          GH_TOKEN: ${{ github.token }}
+         # The release title, in one place: the `gh release create` below and the
+         # dry run's printed command must not be able to drift apart.
+         TITLE: o-xtb ${{ needs.prepare.outputs.version }} - xTB 6.7.1 engine
       steps:
+         # This job resolves the repository through git, like every other `gh`
+         # invocation, so it needs a real checkout: without one `gh` exits 1 with
+         # "failed to run git: fatal: not a git repository (or any of the parent
+         # directories): .git" and "Create the draft release" cannot run at all
+         # (report 215 - the two builders had a checkout, this job did not, and
+         # the workflow was green because the dry run skips every `gh` step).
+         #
+         # Checked out at the workspace root, not at `${SRC_DIR}` as the builders
+         # do: the `gh` steps and their inputs (`notes.md`, `dist/*`) are relative
+         # to the working directory, and a nested checkout would make `gh` walk
+         # up from a directory that has no `.git` in it.
+         #
+         # `fetch-depth: 1` is enough and is set explicitly to say so: the notes
+         # are the heredoc `notes.md` (`--notes-file`), never `--generate-notes`,
+         # so nothing here runs `git log`, a diff or `git describe` - see the
+         # report if that ever changes.  A depth-1 fetch of a tag ref also brings
+         # the tag object itself, which is what `--verify-tag` needs; a full
+         # fetch would pull the whole 41 MB history for no input.
+         - name: Checkout code
+           uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1 node24
+           with:
+            fetch-depth: 1
          - name: Download both packages
-           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+           uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2 node24
            with:
             path: dist
             merge-multiple: true
@@ -440,7 +486,7 @@ jobs:
             sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
             cat SHA256SUMS
          - name: Upload SHA256SUMS as a workflow artifact
-           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+           uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2 node24
            with:
             name: SHA256SUMS
             path: dist/SHA256SUMS
@@ -534,6 +580,39 @@ jobs:
               echo "dry run: the packages and SHA256SUMS above are the whole output"
             fi
             echo "create=${create}" >> "$GITHUB_OUTPUT"
+         # The gap report 215 records: the three `gh` steps below are skipped
+         # unless the gate says `create=true`, so the dry run never executed one
+         # of them and stayed green while `Create the draft release` could not
+         # run (no checkout, hence no repository for `gh` to resolve).
+         #
+         # `gh release create` has no `--dry-run` flag, so this runs the
+         # precondition instead and prints the exact commands the skipped steps
+         # would run: `git rev-parse` fails where the real step failed, `gh repo
+         # view` proves the repository resolves through the same git remote the
+         # skipped steps read, and the `test -s` checks prove the inputs exist at
+         # the paths those steps take them from.  It creates, uploads and edits
+         # nothing.
+         - name: "Dry run: prove the release steps' preconditions"
+           if: steps.gate.outputs.create != 'true'
+           run: |
+            set -euo pipefail
+            git rev-parse --show-toplevel
+            gh repo view --json nameWithOwner --jq '"repository: " + .nameWithOwner'
+            test -s notes.md
+            test -s "dist/oxtb-${VERSION}-linux-x86_64.tar.gz"
+            test -s "dist/oxtb-${VERSION}-windows-x86_64.zip"
+            test -s dist/SHA256SUMS
+            # `--verify-tag` is the one argument this cannot prove on a branch
+            # dispatch (there is no tag), so it is reported instead of assumed.
+            tag="${TAG:-v${VERSION}}"
+            if [ -n "${TAG}" ] && git rev-parse --verify --quiet "refs/tags/${TAG}" >/dev/null; then
+              echo "tag ${TAG} is in this checkout, so --verify-tag would be satisfied"
+            else
+              echo "::notice::no tag ref here, so --verify-tag is not exercised by this dry run"
+            fi
+            echo "would run, from ${PWD}:"
+            echo "  gh release create ${tag} --draft --verify-tag --title '${TITLE}' --notes-file notes.md"
+            echo "  gh release upload ${tag} dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber"
          # Idempotent on purpose: `gh release create` fails when a release for the
          # tag already exists, so a re-run reuses it and the `--clobber` upload
          # below replaces the assets (a duplicate asset name is a 422 otherwise).
@@ -542,11 +621,14 @@ jobs:
            run: |
             set -euo pipefail
             if gh release create "${TAG}" --draft --verify-tag \
-                 --title "o-xtb ${VERSION} - xTB 6.7.1 engine" \
+                 --title "${TITLE}" \
                  --notes-file notes.md; then
               echo "created draft release ${TAG}"
             elif gh release view "${TAG}" >/dev/null; then
-              echo "draft release ${TAG} already exists; re-uploading its assets"
+              # A draft left by a failed run is reused rather than fought with,
+              # so a retry proceeds; but the reuse keeps that draft's title and
+              # notes, and only the assets are replaced below.
+              echo "::warning::release ${TAG} already exists; reusing it and re-uploading its assets"
             else
               echo "::error::cannot create or find a release for ${TAG}"
               exit 1
@@ -557,6 +639,11 @@ jobs:
             set -euo pipefail
             gh release upload "${TAG}" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
             gh release view "${TAG}" --json assets --jq '.assets[].name'
+            # The next step is gated on `inputs.publish` too, so a tag push skips
+            # it; say so instead of leaving a green run that reads as published.
+            if [ "${PUBLISH_INPUT}" != "true" ]; then
+              echo "draft ${TAG} is staged and unpublished; publish it with: gh release edit ${TAG} --draft=false"
+            fi
          # Last, and only on request: publishing is what makes the release public
          # and, with immutable releases enabled, permanent.
          - name: Publish the release

@@ -12,11 +12,11 @@ on:
 # The stale workflow
 jobs:
    stale:
-      runs-on: ubuntu-latest
+      runs-on: ubuntu-24.04
       steps:
          -  name: Post stale message
             if: github.event.label.name == 'stale'
-            uses: actions/github-script@v5
+            uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0 node24
             with:
                script: |
                   const eventName = context.eventName;
@@ -33,7 +33,7 @@ jobs:
                   });
                github-token: ${{ secrets.GITHUB_TOKEN }}
          -  name : Close Stale Items
-            uses: actions/stale@v9
+            uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93 # v11.0.0 node24
             with:
                repo-token: ${{ secrets.GITHUB_TOKEN }}
                stale-issue-label: 'stale' # Label to detect

@@ -16,20 +16,29 @@ The examples were produced with the installed release:
 OxTB version 0.1.0   (xTB engine 6.7.1)   Compiled on 2026/10/16 from 8a0ad67
 ```
 
-The current release is **0.3.0**.  Since the examples were produced the version string has moved
-three times (`0.1.0` -> `0.2.0` -> `0.2.1` -> `0.3.0`), which changes only the `OxTB version` line of
-the banner and the `oxtb_version` field of the `--ljson` provenance block.  The changes under `src/`
-in the range `8a0ad67..HEAD` are one guard in `src/disp/dftd4.F90` (`zeta`/`dzeta`: `qmod.lt.0` ->
-`qmod.le.0`), which fires only when a Mulliken charge is **exactly** zero, and the help/CLI plumbing
+The current release is **0.3.1**.  Since the examples were produced the version string has moved
+four times (`0.1.0` -> `0.2.0` -> `0.2.1` -> `0.3.0` -> `0.3.1`), which changes only the `OxTB version`
+line of the banner and the `oxtb_version` field of the `--ljson` provenance block.  The changes under
+`src/` in the range `8a0ad67..HEAD` are one guard in `src/disp/dftd4.F90` (`zeta`/`dzeta`: `qmod.lt.0`
+-> `qmod.le.0`), which fires only when a Mulliken charge is **exactly** zero, the help/CLI plumbing
 of the machine-readable `--help-values` value sets (`src/xhelp.f90`, `src/prog/main.F90`), which does
-not touch the energy, gradient or Hessian code.  The guard was measured not to move the record: the
-relaxed distance scan `lscan-01` - the case that reaches that boundary geometry - reproduces its
-shipped `xtbscan.log` (1225 lines, 35 per-point energies, `diff`-clean after normalising the build
-hash in the header), the `sp-01` total energy is `-52.373771244067 Eh` as shipped, and the four
-pinned water single points are unchanged.  So the recorded numbers still stand.  The features added
-since the examples were produced - the man-page render pipeline, the extended coverage gate, the
-`--help-values` value sets and the shell completions - are command-line surface; the examples were
-**not** re-run for them.
+not touch the energy, gradient or Hessian code, and - since 0.3.0 - the suite's own command surface:
+one `Engine:` / `Saddle search:` / `IRC integrator:` banner per engine-bearing run type in place of
+the retired `[NOTICE]` lines, the Hessian build announcement, `--lopt-recalc`, the stricter
+positional-argument and numeric-flag checks, one set of number formatters and one convergence-level
+list, and the `aatoau`-derived Angstrom thresholds of `src/landscape/types/settings.f90`.  Of these
+only the thresholds reach a trajectory, and they bind in the dimer path alone (measured on the
+bent-HCN case: -3.2e-11 Eh, at most 1.47e-7 bohr).  The record was re-measured on three cases: the
+relaxed distance scan `lscan-01` - the case that reaches the exactly-zero-charge boundary geometry -
+still reproduces its shipped `xtbscan.log` (1225 lines, 35 per-point energies, `diff`-clean after
+normalising the build hash in the header), `sp-01` still gives the total energy
+`-52.373771244067 Eh`, and `lopt-01` still gives `-56.913729348717 Eh` with its `xtbopt.xyz` byte for
+byte; the four pinned water single points are unchanged as well.  So the recorded numbers still
+stand, while the logs' banner and progress text are historical - the engine banner is new, so a
+diff of the text is expected.  The features added since the examples were produced - the man-page
+render pipeline, the extended coverage gate, the `--help-values` value sets and the shell
+completions - are command-line surface; the examples were **not** re-run for them, and neither for
+the dimer case the thresholds touch.
 
 ## How to run a case
 
