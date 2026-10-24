@@ -57,12 +57,12 @@ jobs:
              ctest --output-on-failure \
                -R '^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$' \
                -E 'o-xtb/docking|xtb/CAPI|mctc-lib/ncoord' 2>&1 | tee "$log"
-             status=${PIPESTATUS[0]}
+             status=${PIPESTATUS}
              {
                echo "### Unit tests: exit ${status}"
                if [ "${status}" -ne 0 ]; then
                  echo '```'
-                 sed -n '/The following tests FAILED/,p' "log" | head -40
+                 sed -n '/The following tests FAILED/,p' "\$log" | head -40
                  echo '```'
                fi
              } >> "$summary"
@@ -76,4 +76,20 @@ jobs:
            working-directory: ${{ env.BUILD_DIR }}
            env:
             OMP_NUM_THREADS: 4
-            
+
+         # Przygotowanie struktury katalogu dystrybucyjnego (paczkowanie) przed wysłaniem
+         - name: Package artifacts
+           shell: msys2 {0}
+           run: |
+            mkdir -p dist/bin dist/share/o-xtb
+            cp "$BUILD_DIR/oxtb.exe" dist/bin/
+            cp param_*.txt dist/share/o-xtb/ 2>/dev/null || true
+            cp .param_gfnff.xtb dist/share/o-xtb/ 2>/dev/null || true
+         
+         # Krok, który wysyła gotową paczkę jako Artifact na GitHubie
+         - name: Upload Windows executable
+           uses: actions/upload-artifact@v4
+           with:
+            name: oxtb-windows-skylake
+            path: dist/
+            if-no-files-found: error
