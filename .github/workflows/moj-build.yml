@@ -1,5 +1,5 @@
 # Natywna kompilacja o-xtb na Windows przy użyciu Intel OneAPI (ifx) oraz Intel MKL.
-# Wersja z linkowaniem statycznym (brak problemów z brakującymi bibliotekami DLL).
+# Wersja w pełni niezależna, zoptymalizowana i w 100% statyczna dla i7-6820HQ (Skylake).
 name: Windows Intel MKL Static Build
 on:
    push:
@@ -14,49 +14,45 @@ jobs:
          - name: Checkout code
            uses: actions/checkout@v4
 
-         # Instalacja oficjalnego kompilatora Intel Fortran (ifx) oraz biblioteki Intel MKL
-         - name: Install Intel OneAPI (ifx & MKL)
-           uses: intel-analytics/oneapi-src@v1
+         # Instalacja najnowszego kompilatora Intel Fortran oraz dedykowanych bibliotek MKL
+         - name: Install Intel Fortran Compiler (ifx) & MKL
+           uses: fortran-lang/setup-fortran@v1
            with:
-             oneapi-components: |
-               intel.oneapi.win.fortran-compiler
-               intel.oneapi.win.mkl
+             compiler: intel
+             install_mkl: true
 
-         # Konfiguracja kompilacji z wymuszeniem linkowania statycznego (BLA_STATIC=ON)
-         # Flagi /MT oraz /Qopenmp-link:static dołączają biblioteki uruchomieniowe do pliku .exe
-         # Dodano także flagę podnoszącą limit stosu (/link /STACK:16777216) zapobiegającą błędom Stack Overflow
+         # Konfiguracja kompilacji:
+         # /O3 /QxCORE-AVX2 -> Maksymalna optymalizacja pod instrukcje AVX2/FMA3 dla Twojego i7
+         # /MT -> Wbudowanie bibliotek uruchomieniowych C/C++ w plik .exe
+         # /Qmkl:sequential -> Wstrzykuje kompletny, statyczny kod MKL bezpośrednio do pliku wykonywalnego
+         # /link /STACK:16777216 -> Zwiększa pamięć podręczną stosu do 16MB zapobiegając Stack Overflow
          - name: Configure build
            shell: cmd
            run: |
-            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
             cmake -B "%BUILD_DIR%" -G Ninja ^
             -DCMAKE_Fortran_COMPILER=ifx ^
             -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF -DWITH_TESTS=ON ^
             -DBUILD_SHARED_LIBS=OFF ^
-            -DBLA_STATIC=ON ^
             -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_Fortran_FLAGS_RELEASE="/O3 /QxCORE-AVX2 /MT /Qopenmp-link:static /DNDEBUG" ^
+            -DCMAKE_Fortran_FLAGS_RELEASE="/O3 /QxCORE-AVX2 /MT /Qmkl:sequential /DNDEBUG" ^
             -DCMAKE_EXE_LINKER_FLAGS="/link /STACK:16777216" ^
-            -DBLA_VENDOR=Intel10_64lp ^
             -DTEST_DRIVE_BUILD_TESTING=OFF
 
-         # Kompilacja projektu
+         # Kompilacja całego projektu przy użyciu Ninja
          - name: Build project
            shell: cmd
            run: |
-            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
             cmake --build "%BUILD_DIR%" --parallel
 
-         # Uruchomienie testów (4 wątki)
+         # Testy numeryczne uruchamiane na 4 rdzeniach procesora i7
          - name: Run the bounded test subset
            shell: cmd
            run: |
-            call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
             cd "%BUILD_DIR%"
             set OMP_NUM_THREADS=4
             ctest --output-on-failure -R "^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$" -E "o-xtb/docking|xtb/CAPI|mctc-lib/ncoord"
            
-         # Przygotowanie struktury katalogu dla artefaktów (binaria + parametry)
+         # Przygotowanie czystej i niezależnej paczki z binariami oraz parametrami obliczeniowymi
          - name: Package artifacts
            shell: cmd
            run: |
@@ -66,7 +62,7 @@ jobs:
             xcopy /Y "param_*.txt" dist\share\o-xtb\ 2>nul || (exit 0)
             xcopy /Y ".param_gfnff.xtb" dist\share\o-xtb\ 2>nul || (exit 0)
          
-         # Wysłanie zoptymalizowanej, niezależnej paczki jako gotowy artefakt do pobrania
+         # Zapis gotowej, skompresowanej paczki ZIP na serwerze GitHub Actions
          - name: Upload Windows executable
            uses: actions/upload-artifact@v4
            with:
