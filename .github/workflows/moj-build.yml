@@ -14,12 +14,13 @@ jobs:
          - name: Checkout code
            uses: actions/checkout@v4
 
-         # Instalacja najnowszego kompilatora Intel Fortran oraz dedykowanych bibliotek MKL
+         # Zaktualizowana wersja v1.4, która poprawnie obsługuje instalację Intel MKL i konfigurację zmiennych
          - name: Install Intel Fortran Compiler (ifx) & MKL
-           uses: fortran-lang/setup-fortran@v1
+           uses: fortran-lang/setup-fortran@v1.4
            with:
              compiler: intel
              install_mkl: true
+             update-environment: true
 
          # Konfiguracja kompilacji:
          # /O3 /QxCORE-AVX2 -> Maksymalna optymalizacja pod instrukcje AVX2/FMA3 dla Twojego i7
