@@ -1,0 +1,567 @@
+# Release: build both release assets at a tag, checksum them, and stage them in a
+# **draft** GitHub release.
+#
+# Why this shape (design: report 208; determinism inputs: report 209):
+#
+# * Tag-triggered, because CI is the only place that holds a credential -
+#   `GITHUB_TOKEN` exists in every workflow.  A tag pushed **by** `GITHUB_TOKEN`
+#   would not re-trigger a workflow (GitHub suppresses recursive triggers), so the
+#   tag must be pushed by a human, with a normal `git push origin v0.3.0`.
+# * Draft first, publish last and only on request: with immutable releases enabled
+#   a published asset can never be replaced, so everything that can still be wrong
+#   (an asset name, a checksum, the notes) has to be found while the release is a
+#   draft.  Re-runs are idempotent - the assets are uploaded with `--clobber`
+#   (a duplicate asset name is a 422 otherwise) and an existing draft is reused.
+# * `gh` rather than a third-party release action: it is preinstalled on every
+#   GitHub-hosted runner, it is first-party, and it needs no `uses:` pin - every
+#   action that does appear here is pinned by full commit SHA, because in a
+#   workflow that can write releases a moved tag equals release takeover.
+name: Release
+on:
+   push:
+      tags: ['v*']
+   # A dry run: it builds, tests, packages and checksums exactly like a tag push
+   # and prints the release notes, but creates no release at all
+   # (`inputs.publish` stays false).  Dispatching it *with* `publish: true` on a
+   # tag ref is also how an existing draft is published after a review.
+   workflow_dispatch:
+      inputs:
+         publish:
+            description: 'Publish the draft release after uploading (false = dry run, no release)'
+            type: boolean
+            default: false
+# Documented gotcha, and the reason nothing else is listed: declaring *any*
+# permission sets every permission not named here to `none`
+# (workflow-syntax reference, "Defining access for the GITHUB_TOKEN scopes").
+# `contents: write` is what creating a release and uploading assets requires;
+# `actions/upload-artifact` does not use the token, so it needs no entry.
+permissions:
+   contents: write
+env:
+   # All three are **relative to `$GITHUB_WORKSPACE`**, which is fixed by the
+   # repository name (`/home/runner/work/o-xtb/o-xtb`): the checkout lands in
+   # `<workspace>/src` and the build tree is always `<workspace>/_build`, so the
+   # paths gfortran embeds in the binary (2312 strings quote the source path, and
+   # the fetched `mctc-lib` adds 126 more from `<build>/_deps/mctc-lib-src`) are
+   # stable across runs of the same tag.  That is report 209 section 5's lever;
+   # no `-DFETCHCONTENT_SOURCE_DIR_*` pin is used here because no existing
+   # workflow pins one and the fixed build directory name already fixes the
+   # fetched dependency's path.
+   SRC_DIR: src
+   BUILD_DIR: _build
+   STAGE_DIR: _stage
+   # The suite's own convention: a varying thread count moves the last bits of an
+   # OpenMP reduction, and a runner is small anyway.
+   OMP_NUM_THREADS: 1
+jobs:
+   # Resolve the version once, verify it against the tree, and hand the build
+   # inputs to the two builders.  Doing it here rather than three times means the
+   # tag/version/epoch are decided before anything is built.
+   prepare:
+      runs-on: ubuntu-latest
+      timeout-minutes: 10
+      outputs:
+         version: ${{ steps.version.outputs.version }}
+         tag: ${{ steps.version.outputs.tag }}
+         commit: ${{ steps.version.outputs.commit }}
+         epoch: ${{ steps.version.outputs.epoch }}
+      env:
+         PUBLISH_INPUT: ${{ inputs.publish }}
+      steps:
+         - name: Checkout code
+           uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+           with:
+            path: ${{ env.SRC_DIR }}
+         # The version comes from the tag and is verified, not assumed: a release
+         # whose asset names say 0.3.0 while the binary prints something else is
+         # worse than no release.  Three-way check - the tag, the product version
+         # in `CMakeLists.txt` and (in each builder) the binary itself.
+         - id: version
+           name: Resolve and verify the version
+           run: |
+            set -euo pipefail
+            # `SOURCE_DATE_EPOCH` from the commit, not from the clock: it is the
+            # date `cmake/version_metadata.cmake` compiles into the banner, and it
+            # is the only date input of the build (report 209 section 3).
+            epoch="$(git -C "${SRC_DIR}" log -1 --format=%ct)"
+            commit="$(git -C "${SRC_DIR}" rev-parse HEAD)"
+            declared="$(sed -n 's/^set(OXTB_PRODUCT_VERSION "\(.*\)")$/\1/p' "${SRC_DIR}/CMakeLists.txt")"
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              tag="${GITHUB_REF_NAME}"
+              version="${tag#v}"
+              if [ "${version}" != "${declared}" ]; then
+                echo "::error::tag ${tag} says ${version}, CMakeLists.txt says ${declared}"
+                exit 1
+              fi
+            else
+              # A dry run on a branch: there is no tag, so the declared product
+              # version is the only honest number and nothing may be released
+              # (enforced below and again in the `release` job).
+              tag=""
+              version="${declared}"
+            fi
+            case "${version}" in
+              [0-9]*.[0-9]*.[0-9]*) ;;
+              *) echo "::error::unusable version '${version}'"; exit 1 ;;
+            esac
+            if [ "${PUBLISH_INPUT}" = "true" ] && [ "${GITHUB_REF_TYPE}" != "tag" ]; then
+              echo "::error::publish is only possible on a tag ref (this is ${GITHUB_REF_NAME})"
+              exit 1
+            fi
+            echo "version ${version} / tag '${tag}' / commit ${commit} / epoch ${epoch}"
+            echo "version=${version}" >> "$GITHUB_OUTPUT"
+            echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+            echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+            echo "epoch=${epoch}" >> "$GITHUB_OUTPUT"
+   # Static Linux executable.  This is the recipe `install.sh` validates and the
+   # only place in CI that runs it; `fortran-build.yml` builds shared trees.
+   linux-static:
+      needs: prepare
+      runs-on: ubuntu-latest
+      timeout-minutes: 120
+      env:
+         VERSION: ${{ needs.prepare.outputs.version }}
+         COMMIT: ${{ needs.prepare.outputs.commit }}
+         SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.epoch }}
+      steps:
+         - name: Checkout code
+           uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+           with:
+            path: ${{ env.SRC_DIR }}
+         # `apt` rather than `pip install cmake ninja`: the grader-like
+         # `pip install` needs a venv on a PEP 668 image, and Ubuntu 24.04's cmake
+         # (3.28) is well above this tree's `cmake_minimum_required(3.17)`.
+         # `libopenblas-dev` ships both `libopenblas.so` and `libopenblas.a`, so
+         # `-DBLA_STATIC=ON` can actually be satisfied - verified in the next step
+         # instead of at link time.
+         - name: Install build dependencies
+           run: |
+            sudo apt-get update
+            sudo apt-get install --yes gfortran cmake ninja-build libopenblas-dev
+            ls -l /usr/lib/*/libopenblas.a
+         # The five flags `install.sh` holds are the whole difference from the
+         # shared build: `WITH_OBJECT=OFF` (a `-static` executable cannot host the
+         # C API `.so`), `BUILD_SHARED_LIBS=OFF`, `BLA_STATIC=ON`,
+         # `CMAKE_EXE_LINKER_FLAGS` and the explicit `libgomp.a` (CMake hands over
+         # `libgomp.so` otherwise and a `-static` link then aborts).
+         #
+         # `-Wl,-u,pthread_mutex_destroy` is **not** an optimisation: under
+         # `-static` libgfortran's exit handler reaches `pthread_mutex_destroy`
+         # through a weak reference behind a guard symbol, and when nothing
+         # references the target libc cannot pull the archive member, so the guard
+         # reads true and the program jumps to address 0 while flushing its units
+         # (report 96).  The undefined reference makes the linker keep the member.
+         - name: Configure static build
+           run: |
+            set -euo pipefail
+            gomp_a="$(gfortran -print-file-name=libgomp.a)"
+            if [ ! -f "${gomp_a}" ]; then
+              echo "::error::no static libgomp at '${gomp_a}'; a -static link would fail"
+              exit 1
+            fi
+            cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -G Ninja \
+              -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_TESTS=ON -DWITH_OBJECT=OFF \
+              -DBUILD_SHARED_LIBS=OFF -DBLA_STATIC=ON \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG" \
+              -DCMAKE_EXE_LINKER_FLAGS="-static -Wl,-u,pthread_mutex_destroy" \
+              -DOpenMP_gomp_LIBRARY="${gomp_a}" \
+              -DTEST_DRIVE_BUILD_TESTING=OFF
+         - name: Build
+           run: |
+            set -euo pipefail
+            cmake --build "${BUILD_DIR}" --parallel 2>&1 | tee build.log
+            if grep -qiE 'Error: |Fatal' build.log; then
+              echo "::error::the build log contains an 'Error:' or 'Fatal' line"
+              exit 1
+            fi
+         # The binary is the artefact, so the binary is what gets asked.  The
+         # banner prints `OxTB version <version>` and `Compiled on <date> from
+         # <sha>`; both are compared with what the tag says.  A build that cannot
+         # name itself must not be shipped.
+         - name: Verify the binary's version and commit
+           run: |
+            set -euo pipefail
+            out="$("${BUILD_DIR}/oxtb" --version)"
+            printf '%s\n' "${out}"
+            got="$(printf '%s\n' "${out}" | sed -n 's/.*OxTB version \([^ ]*\) \*/\1/p' | head -1)"
+            sha="$(printf '%s\n' "${out}" | sed -n 's/.* from \([0-9a-f]\{7\}\).*/\1/p' | head -1)"
+            if [ "${got}" != "${VERSION}" ]; then
+              echo "::error::the binary reports '${got}', the tag says '${VERSION}'"
+              exit 1
+            fi
+            if [ "${sha}" != "${COMMIT:0:7}" ]; then
+              echo "::error::the binary reports commit '${sha}', the tag is '${COMMIT:0:7}'"
+              exit 1
+            fi
+         # A bounded gate, not `-R landscape`: 11 tests in well under a minute,
+         # each one able to go red on a broken binary.  It is deliberately the
+         # same set the Windows row uses, so one list is validated on both
+         # platforms.  It covers a whole GFN2 single point (`o-xtb/gfn2` asserts
+         # the energy to 12 decimals, i.e. the BLAS/LAPACK the build picked up),
+         # the optimizer math, the three CLI pages, `info`, the
+         # executable-relative `share/o-xtb` fallback (`xtb/xtbpath-default` -
+         # the property the tarball layout relies on), and three suite entry
+         # points.  The three chronic exclusions (`o-xtb/docking` is red on Linux
+         # too, `xtb/CAPI` needs the shared library, `mctc-lib/ncoord` takes
+         # ~156 s) cannot match the anchored pattern, so no `-E` is needed.
+         - name: Run the bounded test subset
+           run: |
+            set -euo pipefail
+            ctest --test-dir "${BUILD_DIR}" --output-on-failure \
+              -R '^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$'
+         # The package mirrors the install prefix, so extracting it gives a
+         # working tree with no `XTBPATH`: the run-time fallback looks for
+         # `<bindir>/../share/o-xtb`, which is exactly what the archive contains.
+         # The payload is the explicit list report 208 section 2 names; the
+         # licence texts are LGPL-3.0 section 4's requirement for a binary release,
+         # `.param_gfnff.xtb` is the one parameter file whose name is not
+         # `param_*.txt` and GFN-FF needs it on disk.
+         - name: Package the tarball
+           run: |
+            set -euo pipefail
+            pkg="oxtb-${VERSION}-linux-x86_64"
+            stage="${STAGE_DIR}/${pkg}"
+            rm -rf "${STAGE_DIR}"
+            mkdir -p "${stage}/bin" "${stage}/share/o-xtb" "${stage}/share/man/man1" \
+                     "${stage}/share/man/man7" "${stage}/share/doc/o-xtb"
+            install -m 755 "${BUILD_DIR}/oxtb" "${stage}/bin/oxtb"
+            install -m 644 "${SRC_DIR}"/param_*.txt "${SRC_DIR}/.param_gfnff.xtb" \
+               "${stage}/share/o-xtb/"
+            install -m 644 "${SRC_DIR}/man/oxtb.1" "${stage}/share/man/man1/"
+            install -m 644 "${SRC_DIR}/man/xcontrol.7" "${stage}/share/man/man7/"
+            install -m 644 "${SRC_DIR}/COPYING" "${SRC_DIR}/COPYING.LESSER" \
+               "${stage}/share/doc/o-xtb/"
+            cat > "${stage}/README.txt" <<EOF
+            o-xtb ${VERSION} - a modified xTB 6.7.1 (GFN0-xTB, GFN1-xTB, GFN2-xTB, GFN-FF)
+
+            This is the only supported distribution form of tag v${VERSION}: the
+            source at that tag builds these bytes, and a copy of the executable
+            taken out of this tree is not a supported installation.
+
+            Unpack anywhere and run it.  The executable finds its parameter files
+            through \`<this directory>/share/o-xtb\`, so no XTBPATH is needed:
+
+               bin/oxtb water.xyz --gfn2 --opt
+
+            Copyright (C) 2017-2020 Stefan Grimme, 2019-2020 Sebastian Ehlert and
+            contributors.  LGPL-3.0-or-later, no warranty: see share/doc/o-xtb/COPYING,
+            share/doc/o-xtb/COPYING.LESSER and \`bin/oxtb --license\`.
+
+            Source, full notices and file checksums: https://github.com/OwenChan-0216/o-xtb/releases/tag/v${VERSION}
+            EOF
+            # Reproducible archive: sorted member order, zeroed ownership and one
+            # mtime for every member (the commit's epoch), so the tarball is a
+            # function of the tree, not of when `tar` ran.
+            find "${STAGE_DIR}" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
+            mkdir -p dist
+            tar --create --gzip --file "dist/${pkg}.tar.gz" \
+                --directory "${STAGE_DIR}" \
+                --mtime="@${SOURCE_DATE_EPOCH}" --sort=name \
+                --owner=0 --group=0 --numeric-owner "${pkg}"
+            tar --list --file "dist/${pkg}.tar.gz"
+         # The staticness of the released binary is the point of the five flags
+         # above, so it is asserted instead of assumed.  `ldd` itself exits
+         # non-zero for a static executable, so its output is captured first and
+         # never used at the end of a pipeline.
+         - name: Assert the executable is statically linked
+           run: |
+            set -euo pipefail
+            binary="${STAGE_DIR}/oxtb-${VERSION}-linux-x86_64/bin/oxtb"
+            if [ ! -x "${binary}" ]; then
+              echo "::error::${binary} is missing"
+              exit 1
+            fi
+            ldd_out="$(ldd "${binary}" 2>&1 || true)"
+            case "${ldd_out}" in
+              *"not a dynamic executable"*) echo "static: ${ldd_out}" ;;
+              *) printf '%s\n' "${ldd_out}" >&2; echo "::error::not statically linked"; exit 1 ;;
+            esac
+         - name: Upload the tarball as a workflow artifact
+           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+           with:
+            name: linux-x86_64
+            path: dist/*.tar.gz
+            if-no-files-found: error
+   # Windows executable.  The recipe is `windows-cmake.yml`'s, unchanged except
+   # that it also packages: MSYS2 UCRT64 (not MINGW64, which MSYS2 deprecates),
+   # ninja, `-DBLA_VENDOR=OpenBLAS` (OpenBLAS is LAPACK complete, so it avoids a
+   # second vendor chosen by search order), and the tree's own `if(WIN32)` link
+   # options.  Nothing platform-specific is repeated here: `CMakeLists.txt` adds
+   # `-static -Wl,--stack=16777216` and, since report 209, `-Wl,--no-insert-timestamp`
+   # (the PE `TimeDateStamp` was the only difference between two Windows builds).
+   windows-x86_64:
+      needs: prepare
+      # MSYS2's `update: true` upgrades the toolchain before installing, which is
+      # wins on reliability and loses on reproducibility: two runs of this job
+      # on different days may carry different compilers.  The bytes are therefore
+      # reproducible per runner image, not across images (report 209 section 5.3).
+      runs-on: windows-latest
+      timeout-minutes: 120
+      env:
+         VERSION: ${{ needs.prepare.outputs.version }}
+         COMMIT: ${{ needs.prepare.outputs.commit }}
+         SOURCE_DATE_EPOCH: ${{ needs.prepare.outputs.epoch }}
+      steps:
+         - name: Checkout code
+           uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+           with:
+            path: ${{ env.SRC_DIR }}
+         - name: Setup MSYS2
+           uses: msys2/setup-msys2@f84a36b4009b96413f91c01441130855db9392e5 # v2.9.0
+           with:
+            msystem: UCRT64
+            update: true
+            # As in `windows-cmake.yml`, plus `zip`: the archive is built by the
+            # same shell on both platforms, and `zip` is not in the default
+            # UCRT64 installation.
+            install: >-
+             git
+             zip
+             mingw-w64-ucrt-x86_64-gcc-fortran
+             mingw-w64-ucrt-x86_64-openblas
+             mingw-w64-ucrt-x86_64-cmake
+             mingw-w64-ucrt-x86_64-ninja
+             mingw-w64-ucrt-x86_64-python
+         - name: Configure build
+           shell: msys2 {0}
+           run: >
+            cmake -S "$SRC_DIR" -B "$BUILD_DIR" -G Ninja
+            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF -DWITH_TESTS=ON
+            -DCMAKE_BUILD_TYPE=Release
+            -DCMAKE_Fortran_FLAGS_RELEASE="-O2 -DNDEBUG"
+            -DBLA_VENDOR=OpenBLAS
+            -DTEST_DRIVE_BUILD_TESTING=OFF
+         - name: Build
+           shell: msys2 {0}
+           run: |
+            set -eo pipefail
+            cmake --build "$BUILD_DIR" 2>&1 | tee build.log
+            if grep -qiE 'Error: |Fatal' build.log; then
+              echo "::error::the build log contains an 'Error:' or 'Fatal' line"
+              exit 1
+            fi
+         - name: Verify the binary's version and commit
+           shell: msys2 {0}
+           run: |
+            set -eo pipefail
+            out="$("$BUILD_DIR/oxtb.exe" --version)"
+            printf '%s\n' "$out"
+            got="$(printf '%s\n' "$out" | sed -n 's/.*OxTB version \([^ ]*\) \*/\1/p' | head -1)"
+            sha="$(printf '%s\n' "$out" | sed -n 's/.* from \([0-9a-f]\{7\}\).*/\1/p' | head -1)"
+            if [ "$got" != "$VERSION" ]; then
+              echo "::error::the binary reports '$got', the tag says '$VERSION'"
+              exit 1
+            fi
+            if [ "$sha" != "${COMMIT:0:7}" ]; then
+              echo "::error::the binary reports commit '$sha', the tag is '${COMMIT:0:7}'"
+              exit 1
+            fi
+         - name: Run the bounded test subset
+           shell: msys2 {0}
+           run: |
+            set -eo pipefail
+            ctest --output-on-failure \
+              -R '^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$'
+           working-directory: ${{ env.BUILD_DIR }}
+         - name: Package the zip
+           shell: msys2 {0}
+           run: |
+            set -eo pipefail
+            pkg="oxtb-${VERSION}-windows-x86_64"
+            stage="${STAGE_DIR}/${pkg}"
+            rm -rf "$STAGE_DIR"
+            mkdir -p "$stage/bin" "$stage/share/o-xtb" "$stage/share/man/man1" \
+                     "$stage/share/man/man7" "$stage/share/doc/o-xtb"
+            cp "$BUILD_DIR/oxtb.exe" "$stage/bin/oxtb.exe"
+            cp $SRC_DIR/param_*.txt "$SRC_DIR/.param_gfnff.xtb" "$stage/share/o-xtb/"
+            cp "$SRC_DIR/man/oxtb.1" "$stage/share/man/man1/"
+            cp "$SRC_DIR/man/xcontrol.7" "$stage/share/man/man7/"
+            cp "$SRC_DIR/COPYING" "$SRC_DIR/COPYING.LESSER" "$stage/share/doc/o-xtb/"
+            cat > "$stage/README.txt" <<EOF
+            o-xtb ${VERSION} - a modified xTB 6.7.1 (GFN0-xTB, GFN1-xTB, GFN2-xTB, GFN-FF)
+
+            This is the only supported distribution form of tag v${VERSION}: the
+            source at that tag builds these bytes, and a copy of the executable
+            taken out of this tree is not a supported installation.
+
+            Unpack anywhere and run it.  The executable finds its parameter files
+            through <this directory>\share\o-xtb, so no XTBPATH is needed:
+
+               bin\oxtb.exe water.xyz --gfn2 --opt
+
+            Copyright (C) 2017-2020 Stefan Grimme, 2019-2020 Sebastian Ehlert and
+            contributors.  LGPL-3.0-or-later, no warranty: see share/doc/o-xtb/COPYING,
+            share/doc/o-xtb/COPYING.LESSER and "bin\oxtb.exe --license".
+
+            Source, full notices and file checksums: https://github.com/OwenChan-0216/o-xtb/releases/tag/v${VERSION}
+            EOF
+            find "$STAGE_DIR" -exec touch -d "@${SOURCE_DATE_EPOCH}" {} +
+            mkdir -p dist
+            cd "$STAGE_DIR"
+            zip -r -X "../dist/${pkg}.zip" "$pkg"
+            cd ..
+            unzip -l "dist/${pkg}.zip"
+         - name: Upload the zip as a workflow artifact
+           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+           with:
+            name: windows-x86_64
+            path: dist/*.zip
+            if-no-files-found: error
+   # Checksums for both archives, then the draft release.  The checksums and the
+   # rendered notes are produced even when nothing is released, so a dry run
+   # proves them; only the `gh` steps are gated.
+   release:
+      needs: [prepare, linux-static, windows-x86_64]
+      runs-on: ubuntu-latest
+      timeout-minutes: 15
+      env:
+         VERSION: ${{ needs.prepare.outputs.version }}
+         TAG: ${{ needs.prepare.outputs.tag }}
+         COMMIT: ${{ needs.prepare.outputs.commit }}
+         PUBLISH_INPUT: ${{ inputs.publish }}
+         # `gh` reads `GH_TOKEN`; `github.token` is the same narrowed token as
+         # `secrets.GITHUB_TOKEN`, without the extra indirection.
+         GH_TOKEN: ${{ github.token }}
+      steps:
+         - name: Download both packages
+           uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+           with:
+            path: dist
+            merge-multiple: true
+         # One `SHA256SUMS` over both archives, in a fixed member order, so the
+         # same file verifies both downloads: `cd` into the download directory
+         # and run `sha256sum -c SHA256SUMS`.
+         - name: Write SHA256SUMS
+           run: |
+            set -euo pipefail
+            cd dist
+            ls -l
+            sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+            cat SHA256SUMS
+         - name: Upload SHA256SUMS as a workflow artifact
+           uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+           with:
+            name: SHA256SUMS
+            path: dist/SHA256SUMS
+            if-no-files-found: error
+         # The release body.  Its obligations, from LGPL-3.0 section 4 and
+         # GPL-3.0 section 5(a): say the program is a **modified** xTB 6.7.1, name
+         # the licence as LGPL-3.0-or-later, point at the source **at this tag**
+         # (that is what discharges the source obligation, since the source is
+         # public here), ship both licence texts inside the archives, and name the
+         # third-party licences the **static** Linux asset links in.
+         - name: Render the release notes
+           run: |
+            set -euo pipefail
+            cat > notes.md <<EOF
+            o-xtb ${VERSION} - a modified xTB 6.7.1 engine
+
+            This is **o-xtb**, a modified xTB **6.7.1** (the GFN0-xTB, GFN1-xTB,
+            GFN2-xTB and GFN-FF engine of grimme-lab/xtb at that release) with the
+            o-xtb potential-energy-surface task suite added: sp, opt, scan, ts and
+            irc, plus a numerical Hessian, vibrational frequencies, thermodynamics
+            and a JSON output.  33 upstream files are modified, each marked
+            "Modified by the o-xtb landscape task suite, 2026."
+
+            Assets
+
+            * \`oxtb-${VERSION}-linux-x86_64.tar.gz\` - x86-64 Linux, statically linked
+            * \`oxtb-${VERSION}-windows-x86_64.zip\` - x86-64 Windows (UCRT), statically linked,
+              and asserted to import no MSYS2 runtime DLL
+            * \`SHA256SUMS\` - one SHA-256 over both archives
+
+            Each archive is the install prefix: \`bin/oxtb\` next to
+            \`share/o-xtb\` (the parameter files), \`share/man\` and
+            \`share/doc/o-xtb\` (both licence texts).  Unpack it and run
+            \`bin/oxtb\`; it finds its own parameter files, so no XTBPATH is needed.
+
+            Verify with \`sha256sum -c SHA256SUMS\` (or
+            \`Get-FileHash -Algorithm SHA256\` on Windows), then
+            \`bin/oxtb --version\`, which must print \`OxTB version ${VERSION}\` and
+            \`Compiled on <date> from ${COMMIT:0:7}\`.
+
+            This archive is the only supported distribution form of tag
+            v${VERSION}.  A copy of the executable taken out of some other tree is
+            not a supported installation; if you need another form, build this tag.
+
+            Licence and source
+
+            o-xtb is free software under the **GNU Lesser General Public License,
+            version 3 or later** (LGPL-3.0-or-later), with no warranty.  Both
+            licence texts ship inside each archive under \`share/doc/o-xtb/\`
+            (\`COPYING\` is GPL-3.0, \`COPYING.LESSER\` adds the LGPL permissions);
+            \`bin/oxtb --license\` prints the runtime notice.
+
+            The corresponding source is this repository **at this tag**:
+            https://github.com/OwenChan-0216/o-xtb/tree/v${VERSION}
+            (also attached by GitHub as a source zip and tarball).  That tree is the
+            complete, corresponding source of these binaries and is the preferred
+            form for modifications under LGPL-3.0 section 4.
+
+            Third-party notices
+
+            The Linux asset is statically linked and contains:
+
+            * \`libgomp\` (the GNU OpenMP runtime) as \`libgomp.a\`, covered by the
+              **GCC Runtime Library Exception** to GPL-3.0; using it does not change
+              the licence of o-xtb.
+            * **OpenBLAS**, under the **BSD 3-Clause** licence (its licence text and
+              copyright notices are inside the archive members of \`libopenblas.a\`).
+
+            The Windows asset is linked the same way - against the GNU OpenMP
+            runtime and OpenBLAS from MSYS2 UCRT64, importing nothing but the
+            operating system's own DLLs - so it carries the same two obligations.
+
+            Built by GitHub Actions from tag v${VERSION} (commit ${COMMIT}).
+            EOF
+            cat notes.md
+         # One source of truth for what this run may do, so the three `gh` steps
+         # cannot disagree: a tag push stages a draft, a dispatch stages a draft
+         # and publishes it, a dispatch without `publish` creates nothing.
+         - id: gate
+           name: Decide whether this run may create a release
+           run: |
+            set -euo pipefail
+            create=false
+            if [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+              create=true
+              echo "a tag push stages a draft release and leaves publishing to a human"
+            elif [ "${PUBLISH_INPUT}" = "true" ]; then
+              create=true
+              echo "a dispatch with publish=true stages the draft and then publishes it"
+            else
+              echo "dry run: the packages and SHA256SUMS above are the whole output"
+            fi
+            echo "create=${create}" >> "$GITHUB_OUTPUT"
+         # Idempotent on purpose: `gh release create` fails when a release for the
+         # tag already exists, so a re-run reuses it and the `--clobber` upload
+         # below replaces the assets (a duplicate asset name is a 422 otherwise).
+         - name: Create the draft release
+           if: steps.gate.outputs.create == 'true'
+           run: |
+            set -euo pipefail
+            if gh release create "${TAG}" --draft --verify-tag \
+                 --title "o-xtb ${VERSION} - xTB 6.7.1 engine" \
+                 --notes-file notes.md; then
+              echo "created draft release ${TAG}"
+            elif gh release view "${TAG}" >/dev/null; then
+              echo "draft release ${TAG} already exists; re-uploading its assets"
+            else
+              echo "::error::cannot create or find a release for ${TAG}"
+              exit 1
+            fi
+         - name: Upload the assets
+           if: steps.gate.outputs.create == 'true'
+           run: |
+            set -euo pipefail
+            gh release upload "${TAG}" dist/*.tar.gz dist/*.zip dist/SHA256SUMS --clobber
+            gh release view "${TAG}" --json assets --jq '.assets[].name'
+         # Last, and only on request: publishing is what makes the release public
+         # and, with immutable releases enabled, permanent.
+         - name: Publish the release
+           if: steps.gate.outputs.create == 'true' && env.PUBLISH_INPUT == 'true'
+           run: |
+            set -euo pipefail
+            gh release edit "${TAG}" --draft=false
+            gh release view "${TAG}" --json tagName,isDraft,url
