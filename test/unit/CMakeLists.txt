@@ -1785,6 +1785,15 @@ add_test("xtb/landscape-ts-method-unknown"
 # (`--lts-escape-step 0`, which is what this test pins: `xtb/landscape-ts-escape`
 # is the same input with the default escape, where the walk out of the minimum
 # turns the search into a successful one).
+#
+# The `--ljson` document reports that verdict as `status` -1 (`error`), not 1
+# (`incomplete`): `landscape_json_status_error` is defined as "the task reported
+# an error through `env`", and this path does.  The reported status is a
+# separate fact from `converged`: `confirm_saddle` clears `converged` when the
+# confirmation rejects the point, so a guard written on `converged` cannot see
+# the H2 verdict at all and downgrades it (report 224, finding 1).  The
+# failed-search branch - `status` 1 with the search's own message - is pinned
+# by `xtb/landscape-ts-failure`.
 set(LANDSCAPE-HNC "${CMAKE_CURRENT_BINARY_DIR}/landscape_hnc.xyz")
 file(WRITE "${LANDSCAPE-HNC}"
   "3\nlinear HNC (a minimum)\n"
@@ -1793,14 +1802,14 @@ file(WRITE "${LANDSCAPE-HNC}"
   "H  0.0000000 -1.0500000  0.0000000\n")
 file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_ts_minimum.cmake" [=[
 file(MAKE_DIRECTORY "${RUNDIR}")
-foreach(name "xtbts.xyz" "xtbts.log")
+foreach(name "xtbts.xyz" "xtbts.log" "landscape_ts.json")
   if(EXISTS "${RUNDIR}/${name}")
     file(REMOVE "${RUNDIR}/${name}")
   endif()
 endforeach()
 execute_process(
   COMMAND "${EXE}" "${INPUT}" --gfn 2 --lts --lts-method prfo --norestart
-          --lts-escape-step 0
+          --lts-escape-step 0 --ljson
   WORKING_DIRECTORY "${RUNDIR}"
   RESULT_VARIABLE status
   OUTPUT_VARIABLE output
@@ -1823,6 +1832,26 @@ foreach(name "xtbts.xyz" "xtbts.log")
     message(FATAL_ERROR "${name} was not written despite the failure")
   endif()
 endforeach()
+# the machine-readable verdict of the same run
+if(NOT EXISTS "${RUNDIR}/landscape_ts.json")
+  message(FATAL_ERROR "--ljson wrote no landscape_ts.json\n${output}")
+endif()
+file(READ "${RUNDIR}/landscape_ts.json" document)
+if(NOT document MATCHES "\"status\": -1,")
+  message(FATAL_ERROR "the rejected point is not reported as status -1 (error)\n${document}")
+endif()
+if(NOT document MATCHES "\"status_name\": \"error\"")
+  message(FATAL_ERROR "the rejected point is not named as an error\n${document}")
+endif()
+if(NOT document MATCHES "\"converged\": false")
+  message(FATAL_ERROR "the rejected point still reports converged\n${document}")
+endif()
+if(NOT document MATCHES "the located stationary point is a minimum")
+  message(FATAL_ERROR "the document lost the confirmation's message\n${document}")
+endif()
+if(NOT document MATCHES "\"n_imag\": 0")
+  message(FATAL_ERROR "the document does not carry n_imag 0\n${document}")
+endif()
 ]=])
 add_test("xtb/landscape-ts-minimum"
   ${CMAKE_COMMAND}
@@ -3647,6 +3676,51 @@ set_tests_properties(
 # `cmake -P` script.
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+# The precision oracle of the performance campaign
+# (`docs/_simplify-recon/221-step0-benchmark-and-s2.md`): the delivered numbers,
+# asserted at the delivered precision instead of at a regression tripwire.
+#
+# The four water single points of `AGENTS.md` section 6 are pinned at 1e-12 Eh
+# (the 12 decimals the program prints; ~1120 ulp at 5.8 Eh) - GFN1 and GFNff had
+# no test at all before, GFN0 was a 10-digit prefix match and GFN2 a 1e-6 check
+# inside `install.sh`.  `--hess` on the same water pins the raw finite difference
+# matrix: the file shape, byte identity over two runs, and every one of its 81
+# entries against the delivered 9x9 matrix to 1e-9 Eh/bohr^2 (10x the file's own
+# print resolution).  The reference water is the geometry of the GFN0 test
+# above, so the two files cannot drift apart.
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/landscape_precision_py.cmake" [=[
+file(REMOVE_RECURSE "${RUNDIR}")
+file(MAKE_DIRECTORY "${RUNDIR}")
+execute_process(
+  COMMAND "${PYTHON}" "${SCRIPT}" "${EXE}" "${RUNDIR}" "${INPUT}"
+  WORKING_DIRECTORY "${RUNDIR}"
+  RESULT_VARIABLE status
+  OUTPUT_VARIABLE output
+  ERROR_VARIABLE output
+)
+if(NOT status EQUAL 0)
+  message(FATAL_ERROR "landscape_precision_check.py failed with status ${status}\n${output}")
+endif()
+]=])
+add_test("xtb/landscape-precision"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${CMAKE_CURRENT_SOURCE_DIR}/landscape_precision_check.py
+  -DEXE=${XTB-EXE}
+  -DINPUT=${LANDSCAPE-GFN0-WATER}
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-precision
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_precision_py.cmake")
+# The oracle is only meaningful at a pinned thread count: with OpenMP the SCC
+# reductions are summed in thread order, so two runs of one binary differ by a
+# few ulp and neither the four energies (1e-12 Eh) nor the byte identity of the
+# hessian file holds any more.  Measured: without this property the check fails
+# on the byte comparison of the two `--hess` runs.
+set_tests_properties(
+  "xtb/landscape-precision"
+  PROPERTIES
+  ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1"
+)
+
 set(LANDSCAPE-E2E-PY "${CMAKE_CURRENT_SOURCE_DIR}/landscape_e2e_check.py")
 set(LANDSCAPE-E2E-XTB "${XTB-EXE}")
 # the tester executable of this directory (a generator expression would not
@@ -3713,7 +3787,7 @@ if(NOT EXISTS "${RUNDIR}/landscape_sp.json")
   message(FATAL_ERROR "--ljson with the default run type wrote no landscape_sp.json\n${output}")
 endif()
 file(READ "${RUNDIR}/landscape_sp.json" document)
-foreach(needle "\"format\": 2" "\"task\": \"sp\"" "\"n_atoms\": 3" "\"energy\": " "\"geometry\": {" "\"unit\": \"bohr\"" "\"provenance\": {" "\"oxtb_version\": \"0.3.1\"" "\"engine_version\": \"6.7.1\"" "\"input_file\": ")
+foreach(needle "\"format\": 2" "\"task\": \"sp\"" "\"n_atoms\": 3" "\"energy\": " "\"geometry\": {" "\"unit\": \"bohr\"" "\"provenance\": {" "\"oxtb_version\": \"0.3.2\"" "\"engine_version\": \"6.7.1\"" "\"input_file\": ")
   string(FIND "${document}" "${needle}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "landscape_sp.json lacks ${needle}\n${document}")
@@ -3805,6 +3879,49 @@ add_test("xtb/landscape-e2e-ts-counters"
   "-DARGS=ts-counters;${LANDSCAPE-E2E-XTB};${LANDSCAPE-HCN};${CMAKE_CURRENT_BINARY_DIR}/landscape-e2e-ts-counters"
   -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-e2e-ts-counters
   -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_e2e_py.cmake")
+
+# A transition state search that runs out of steps (report 221, S2 and H1):
+# the confirmation Hessian is only built for a converged search, so a failed
+# run must not pay its 6N finite difference points and must keep its own
+# failure message instead of the confirmation's verdict.  Both branches of the
+# task are covered - a single geometry P-RFO search and a 9-image NEB band -
+# and each is run with and without `--lts-no-verify`: the two runs have to cost
+# the same number of evaluations.  The band needs the ammonia inversion
+# product, which the mode writes itself, so one input file is enough.
+add_test("xtb/landscape-ts-failure"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-E2E-PY}
+  "-DARGS=ts-failure;${LANDSCAPE-E2E-XTB};${LANDSCAPE-NH3};${CMAKE_CURRENT_BINARY_DIR}/landscape-ts-failure"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-ts-failure
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_e2e_py.cmake")
+set_tests_properties(
+  "xtb/landscape-ts-failure"
+  PROPERTIES
+  ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1"
+)
+
+# The two failure statuses of the `ts` document, side by side (report 224,
+# finding 1): a search that ran out of steps is `incomplete` (1) with its own
+# message and `n_imag` -1, a search that converged onto a *minimum* is `error`
+# (-1) with the confirmation's verdict and `n_imag` 0.  The second branch is the
+# H2 verdict: `confirm_saddle` clears `result%converged` when it rejects the
+# point, so a status predicate written on `converged` never sees it and
+# downgrades the document to 1.  The mode writes the linear HNC fixture it needs
+# (the exhausted branch uses the ammonia input); the CLI half of the same pin is
+# in `xtb/landscape-ts-minimum`.
+add_test("xtb/landscape-ts-status"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-E2E-PY}
+  "-DARGS=ts-status;${LANDSCAPE-E2E-XTB};${LANDSCAPE-NH3};${CMAKE_CURRENT_BINARY_DIR}/landscape-ts-status"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-ts-status
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_e2e_py.cmake")
+set_tests_properties(
+  "xtb/landscape-ts-status"
+  PROPERTIES
+  ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1"
+)
 
 # The point bookkeeping of a scan (`n_points`/`n_valid`/`n_fail`/
 # `n_unconverged`) against the frames the task writes, converged and not.
@@ -4782,7 +4899,7 @@ add_test("xtb/landscape-dock-gfn-value"
 
 # The startup banner (`src/header.f90`, `docs/_simplify-recon/116-oxtb-banner.md`)
 # replaced the boxed `x T B` banner with the OxTB wordmark, the product version
-# 0.3.1, the engine version and the legal notice of GPL-3.0 section 5(d).
+# 0.3.2, the engine version and the legal notice of GPL-3.0 section 5(d).
 # Nothing covered the banner text before: `xtb/Argparser_print_version` ran
 # `--version` without looking at its output, so reverting `src/header.f90` left
 # every test green.  The check pins the centred block line by line (wordmark

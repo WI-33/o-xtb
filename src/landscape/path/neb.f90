@@ -92,7 +92,13 @@
 !>  * **Fixed endpoints** by default (`relax_ends = .false.`): the first and
 !>    the last image do not take part in the optimisation.  The optional
 !>    endpoint relaxation is performed by the task with the M1 minimiser
-!>    before the band is built.
+!>    before the band is built.  Because the endpoints never move, their
+!>    energy and gradient are evaluated **once** and reused by every later
+!>    iteration (`landscape_band_endpoint_cache`); re-evaluating them would
+!>    recompute the same pair of values, since the engine's `off` restart
+!>    policy restores the recorded wavefunction before every evaluation.
+!>    That equality is exact for `off` and `pin`; with `--lts-restart warm`
+!>    it is not, see the note on the cache.
 !>  * **Propagation and its measured failure window.**  The band is propagated
 !>    by a truncated L-BFGS step on the band force (steps are scaled down, not
 !>    projected, when the largest component exceeds `max_displ`) and the step
@@ -139,7 +145,8 @@ module xtb_landscape_path_neb
    implicit none(type, external)
    private
 
-   public :: landscape_band_type, landscape_band_optimize
+   public :: landscape_band_type, landscape_band_endpoint_cache
+   public :: landscape_band_optimize
    public :: landscape_band_build_path, landscape_band_energies, landscape_band_forces
    public :: landscape_band_align, landscape_band_measures, landscape_band_converged
    public :: landscape_neb_tangent, landscape_neb_springs, landscape_neb_force
@@ -158,7 +165,10 @@ module xtb_landscape_path_neb
       integer :: n_iter = 0
       !> Number of images (endpoints included)
       integer :: n_images = 0
-      !> Number of image evaluations performed by the kernel
+      !> Number of energy/gradient evaluations performed by the kernel: the
+      !> initial band (`n_images`), one sweep over the internal images per
+      !> iteration (`n_images - 2`), because the two endpoints are evaluated
+      !> once and cached
       integer :: n_eval = 0
       !> True if the propagation was aborted by the divergence safety net
       logical :: diverged = .false.
@@ -195,6 +205,50 @@ module xtb_landscape_path_neb
       !> Human readable termination message
       character(len=:), allocatable :: message
    end type landscape_band_type
+
+!> Cached energy and gradient of the two fixed endpoint images of a band.
+!>
+!> `landscape_band_pack` moves only the internal images `2 .. n_images-1`, so
+!> the two endpoints keep their geometry for the whole run; evaluating them
+!> again in every iteration recomputes the same pair of values.  This type
+!> holds them, and `landscape_band_energies` fills it on the first sweep and
+!> reuses it afterwards.
+!>
+!> **The reuse changes no number for the `off` and `pin` restart policies.**
+!> The engine's default restart policy `off` records the incoming
+!> wavefunction and restores it before every evaluation (`xtb_landscape_engine`),
+!> so a repeated geometry returns a bitwise identical energy and gradient; the
+!> cached values are therefore the values the re-evaluation would have
+!> produced (measured byte for byte, see report 223).  With
+!> `--lts-restart warm` the engine keeps the incoming wavefunction instead
+!> (`engine.f90`, `p_landscape_restart_warm`), so the second evaluation of the
+!> same geometry can land on a different SCF solution - `AGENTS.md` section 6
+!> measures a 3.9e-07 Eh/bohr gradient jump for that policy - and the cache
+!> freezes the first sweep's endpoint values where a re-evaluation would have
+!> returned slightly different ones.  A warm-restart band is therefore not
+!> bitwise equal to the pre-cache run; the band kernel cannot ask the model
+!> for its restart mode, so the difference is documented here rather than
+!> avoided (report 224, finding 5).
+!>
+!> The cache belongs to **one** band: fill it from the first evaluation of a
+!> band whose endpoints do not move.  `landscape_band_energies` enforces that
+!> by keeping copies of the two endpoint geometries it filled the cache from
+!> and dropping the cache when the band hands over different ones (or a band
+!> with a different atom count), so a cache reused by a second band cannot
+!> return the first band's values.  The two consumers are
+!> `landscape_band_optimize` and the string/GSM optimisation, whose endpoints
+!> are fixed as well, and both create it right before the run.
+type :: landscape_band_endpoint_cache
+   !> True once both endpoint evaluations are stored
+   logical :: valid = .false.
+   !> Endpoint energies (hartree), `(1)` reactant and `(2)` product
+   real(wp) :: energy(2) = 0.0_wp
+   !> Endpoint gradients (hartree/bohr), `(3, nat, 2)`
+   real(wp), allocatable :: gradient(:, :, :)
+   !> Geometries the cache was filled from (bohr), `(3, nat, 2)`; the cache is
+   !> dropped when the band presents different endpoints
+   real(wp), allocatable :: geometry(:, :, :)
+end type landscape_band_endpoint_cache
 
 contains
 
@@ -278,7 +332,18 @@ subroutine landscape_band_align(env, images)
 end subroutine landscape_band_align
 
 !> Evaluate all images of a band: energy and Cartesian gradient.
-subroutine landscape_band_energies(env, model, images, energies, gradients, fail)
+!>
+!> With the optional `endpoints` cache the two fixed endpoint images are
+!> evaluated only on the first sweep and read from the cache afterwards, which
+!> removes `2/n_images` of the evaluations of a band run (40 % at five images,
+!> 22 % at nine) without changing any value: see the note on
+!> `landscape_band_endpoint_cache`.  The cache is dropped on entry when it was
+!> filled from other endpoint geometries, so a cache handed to a second band
+!> cannot answer with the first band's values.  `n_evaluated` reports how many
+!> images this call actually sent to the potential, so a caller can keep an
+!> honest cost counter instead of assuming `n_images`.
+subroutine landscape_band_energies(env, model, images, energies, gradients, fail, &
+      & endpoints, n_evaluated)
    !> Computational environment
    type(TEnvironment), intent(inout) :: env
    !> Potential
@@ -291,16 +356,62 @@ subroutine landscape_band_energies(env, model, images, energies, gradients, fail
    real(wp), allocatable, intent(out) :: gradients(:, :, :)
    !> Failure flag
    logical, intent(out) :: fail
+   !> Cached endpoint values of this band (optional)
+   type(landscape_band_endpoint_cache), intent(inout), optional :: endpoints
+   !> Number of images evaluated on this call (optional)
+   integer, intent(out), optional :: n_evaluated
 
    real(wp), allocatable :: x(:), g(:)
-   integer :: k, nat, n_images
+   integer :: k, nat, n_images, endpoint
+   logical :: filled(2), cached
 
    fail = .false.
    nat = size(images, 2)
    n_images = size(images, 3)
    allocate(energies(n_images), gradients(3, nat, n_images))
    allocate(x(3*nat), g(3*nat))
+   if (present(n_evaluated)) n_evaluated = 0
+   filled = .false.
+   if (present(endpoints)) then
+      ! the cache is only usable for the band it was filled from: a different
+      ! atom count or different endpoint geometries mean the stored values
+      ! belong to another band (report 224, finding 4)
+      if (allocated(endpoints%gradient)) then
+         if (size(endpoints%gradient, 1) /= 3 .or. &
+               & size(endpoints%gradient, 2) /= nat .or. &
+               & size(endpoints%gradient, 3) /= 2) then
+            deallocate(endpoints%gradient)
+            endpoints%valid = .false.
+         end if
+      end if
+      if (endpoints%valid) then
+         if (n_images < 2 .or. .not. allocated(endpoints%geometry)) then
+            endpoints%valid = .false.
+         else if (size(endpoints%geometry, 1) /= 3 .or. &
+               & size(endpoints%geometry, 2) /= nat .or. &
+               & size(endpoints%geometry, 3) /= 2) then
+            endpoints%valid = .false.
+         else if (any(endpoints%geometry(:, :, 1) /= images(:, :, 1)) .or. &
+               & any(endpoints%geometry(:, :, 2) /= images(:, :, n_images))) then
+            endpoints%valid = .false.
+         end if
+         if (.not. endpoints%valid) then
+            if (allocated(endpoints%gradient)) deallocate(endpoints%gradient)
+            if (allocated(endpoints%geometry)) deallocate(endpoints%geometry)
+         end if
+      end if
+   end if
    do k = 1, n_images
+      endpoint = 0
+      if (k == 1) endpoint = 1
+      if (k == n_images) endpoint = 2
+      cached = .false.
+      if (endpoint > 0 .and. present(endpoints)) cached = endpoints%valid
+      if (cached) then
+         energies(k) = endpoints%energy(endpoint)
+         gradients(:, :, k) = endpoints%gradient(:, :, endpoint)
+         cycle
+      end if
       x = geometry_pack(images(:, :, k))
       call model%evaluate(x, energies(k), g, fail)
       if (fail) then
@@ -320,7 +431,21 @@ subroutine landscape_band_energies(env, model, images, energies, gradients, fail
          return
       end if
       gradients(:, :, k) = reshape(g, [3, nat])
+      if (present(n_evaluated)) n_evaluated = n_evaluated + 1
+      if (endpoint > 0 .and. present(endpoints)) then
+         if (.not. allocated(endpoints%gradient)) &
+            & allocate(endpoints%gradient(3, nat, 2))
+         if (.not. allocated(endpoints%geometry)) &
+            & allocate(endpoints%geometry(3, nat, 2))
+         endpoints%energy(endpoint) = energies(k)
+         endpoints%gradient(:, :, endpoint) = gradients(:, :, k)
+         endpoints%geometry(:, :, endpoint) = images(:, :, k)
+         filled(endpoint) = .true.
+      end if
    end do
+   ! `valid` means both endpoints are stored; a call that found one of them
+   ! cached keeps the flag it found
+   if (present(endpoints)) endpoints%valid = endpoints%valid .or. all(filled)
 
 end subroutine landscape_band_energies
 
@@ -677,7 +802,11 @@ end subroutine landscape_band_unpack
 !> On entry `reactant` and `product` are the two endpoint geometries (same
 !> atoms in the same order); on return `images` holds the converged band,
 !> `energies` its energies and `forces` its band forces.  The two endpoints
-!> are copied verbatim and never modified.  `band%converged` reports the
+!> are copied verbatim and never modified, so their energy and gradient are
+!> evaluated once and reused (see `landscape_band_endpoint_cache`);
+!> `band%n_eval` counts the evaluations that actually happened,
+!> `n_images + n_iter*(n_images - 2)` for a run that reaches `n_iter`
+!> iterations.  `band%converged` reports the
 !> dual criterion; an exhausted iteration budget or a failed image evaluation
 !> is reported through `band%message` and `band%converged = .false.`, so the
 !> task layer can escalate it to a non-zero exit status.
@@ -713,10 +842,11 @@ subroutine landscape_band_optimize(env, model, settings, reactant, product, &
    real(wp), intent(in), optional :: initial_images(:, :, :)
 
    type(landscape_lbfgs_type) :: lbfgs
+   type(landscape_band_endpoint_cache) :: endpoints
    real(wp), allocatable :: trial(:, :, :), x(:), x_new(:), g(:), g_new(:)
    real(wp), allocatable :: d(:), en_new(:), grad_new(:, :, :), f_new(:, :, :)
    real(wp) :: ci_rms, merit_initial
-    integer :: iter, n_images, nat, ndim, highest
+    integer :: iter, n_images, nat, ndim, highest, n_evaluated
    logical :: fail, ok, steepest, converged, has_climbing, aborted
 
    band%converged = .false.
@@ -749,12 +879,13 @@ subroutine landscape_band_optimize(env, model, settings, reactant, product, &
    allocate(energies(n_images))
    allocate(trial(3, nat, n_images))
    allocate(x(ndim), x_new(ndim), g(ndim), g_new(ndim), d(ndim))
-   call landscape_band_energies(env, model, images, energies, grad_new, fail)
+   call landscape_band_energies(env, model, images, energies, grad_new, fail, &
+      & endpoints, n_evaluated)
    if (fail) then
       band%message = "a band image could not be evaluated"
       return
    end if
-   band%n_eval = n_images
+   band%n_eval = n_evaluated
 
    call landscape_band_forces(env, images, energies, grad_new, settings, 0, forces)
    call landscape_band_measures(forces, 0, band%f_rms_avg, band%f_rms_max)
@@ -836,14 +967,15 @@ subroutine landscape_band_optimize(env, model, settings, reactant, product, &
       if (settings%align) call landscape_band_align(env, trial)
       call landscape_band_pack(trial, x_new)
 
-      call landscape_band_energies(env, model, trial, en_new, grad_new, fail)
+      call landscape_band_energies(env, model, trial, en_new, grad_new, fail, &
+         & endpoints, n_evaluated)
       if (fail) then
          call env%error("a band image could not be evaluated", source)
          band%message = "a band image could not be evaluated"
          aborted = .true.
          exit
       end if
-      band%n_eval = band%n_eval + n_images
+      band%n_eval = band%n_eval + n_evaluated
       call landscape_band_forces(env, trial, en_new, grad_new, settings, &
          & band%climbing_image, f_new)
       call landscape_band_measures(f_new, band%climbing_image, &

@@ -134,7 +134,7 @@ module xtb_landscape_json
    !> of the run (`mol%chrg`, `mol%uhf`).  The fields are all written, so the
    !> `provenance` block has the same shape in every task document.
    type :: landscape_provenance
-      !> Product version of the program (`oxtb_version`, 0.3.1)
+      !> Product version of the program (`oxtb_version`, 0.3.2)
       character(len=:), allocatable :: oxtb_version
       !> Version of the xTB engine (`engine_version`, 6.7.1)
       character(len=:), allocatable :: engine_version

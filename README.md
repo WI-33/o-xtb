@@ -42,7 +42,7 @@ suite task is built on the same xTB calculator (`class(TCalculator)`) and
 reuses its energy, gradient and numerical Hessian, so the underlying GFN
 methods and parameters are unchanged.
 
-Product version `0.3.1`, engine xTB `6.7.1`.
+Product version `0.3.2`, engine xTB `6.7.1`.
 
 Names: the command and the project are `oxtb` / `o-xtb`, but output file names
 keep their historical xTB spellings (`xtbopt.xyz`, `xtbscan.log`,

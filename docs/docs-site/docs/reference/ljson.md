@@ -87,7 +87,7 @@ input_file
 
 | Key | Meaning |
 |---|---|
-| `oxtb_version` | the product version of this fork, e.g. `0.3.1` |
+| `oxtb_version` | the product version of this fork, e.g. `0.3.2` |
 | `engine_version` | the xTB engine version, e.g. `6.7.1` |
 | `commit` | the git commit the binary was built from |
 | `command_line` | the caller's own command line (not a property of the process) |

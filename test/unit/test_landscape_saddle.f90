@@ -949,24 +949,50 @@ subroutine test_mb_bprfo(error)
 
 end subroutine test_mb_bprfo
 
-!> P-RFO and B-P-RFO agree to better than 1e-3 bohr on Mueller-Brown.
+!> P-RFO and B-P-RFO agree to better than 2e-5 bohr on Mueller-Brown.
+!>
+!> The delivered RMSD is 6.3022e-06 bohr (the M4 acceptance number of
+!> `AGENTS.md` section 2), so the gate is 2e-5 bohr: 3x above the delivered
+!> value and 50x tighter than the 1e-3 tripwire it replaces.  A change that
+!> moves the two searches apart by more than 1e-5 bohr is a change of the
+!> saddle machinery and is re-baselined in a report, not absorbed here.
+!>
+!> The quantity is a difference of two independently converged iterates, so a
+!> different convergence path can move it by the last step length.  Measured
+!> on both compilers the project builds with - gfortran 12.2.0 and the gating
+!> CI's 14.4.0 - the value is **identical** (6.3022e-06 bohr printed, and the
+!> two converged points agree to all 14 printed digits), so the datum is not a
+!> compiler artefact of this machine.  The tolerance is nevertheless backed by
+!> the two searches' own residuals below: a run that accepted a sloppy step
+!> fails on the residual rather than silently moving the pair apart.
 subroutine test_mb_agree(error)
    type(error_type), allocatable, intent(out) :: error
    type(TEnvironment) :: env
    type(landscape_muller_brown_model) :: model
    real(wp), allocatable :: x_prfo(:), x_bprfo(:)
-   real(wp) :: rmsd
+   real(wp) :: rmsd, gmax_prfo, gmax_bprfo
    logical :: ok
 
    call init(env)
    call new_muller_brown_model(model)
-   call run_one(env, error, model, p_landscape_ts_prfo, [-0.6_wp, 0.4_wp], x_prfo, ok)
+   call run_one(env, error, model, p_landscape_ts_prfo, [-0.6_wp, 0.4_wp], x_prfo, &
+      & ok, gmax_prfo)
    if (allocated(error)) return
-   call run_one(env, error, model, p_landscape_ts_bprfo, [-0.7_wp, 0.45_wp], x_bprfo, ok)
+   call run_one(env, error, model, p_landscape_ts_bprfo, [-0.7_wp, 0.45_wp], &
+      & x_bprfo, ok, gmax_bprfo)
+   if (allocated(error)) return
+   ! the searches' own residuals (measured 9.6478e-06 and 1.0395e-06
+   ! hartree/bohr): the pair comparison is only meaningful while both are
+   ! converged, so this is the gate a different LAPACK is allowed to move
+   call check(error, gmax_prfo < 1.0e-4_wp, &
+      & "the P-RFO search did not converge tightly enough for the comparison")
+   if (allocated(error)) return
+   call check(error, gmax_bprfo < 1.0e-4_wp, &
+      & "the B-P-RFO search did not converge tightly enough for the comparison")
    if (allocated(error)) return
    rmsd = sqrt(sum((x_prfo - x_bprfo)**2)/real(size(x_prfo), wp))
    write(stdout, '(1x,a,es12.4)') "  prfo vs bprfo RMSD (bohr): ", rmsd
-   call check(error, rmsd < 1.0e-3_wp,&
+   call check(error, rmsd < 2.0e-5_wp,&
       & "the two methods did not reach the same saddle point")
 
 end subroutine test_mb_agree
@@ -1509,7 +1535,7 @@ subroutine run_mb(error, method, xstart)
 end subroutine run_mb
 
 !> Run one transition state search with analytic Mueller-Brown data.
-subroutine run_one(env, error, model, method, xstart, xfinal, converged)
+subroutine run_one(env, error, model, method, xstart, xfinal, converged, gmax)
    !> Computational environment
    type(TEnvironment), intent(inout) :: env
    !> Failure report
@@ -1524,6 +1550,8 @@ subroutine run_one(env, error, model, method, xstart, xfinal, converged)
    real(wp), allocatable, intent(out) :: xfinal(:)
    !> Convergence flag
    logical, intent(out) :: converged
+   !> Largest gradient component at the converged point (hartree/bohr)
+   real(wp), intent(out), optional :: gmax
 
    type(landscape_ts_settings) :: set
    type(landscape_result) :: result
@@ -1540,6 +1568,7 @@ subroutine run_one(env, error, model, method, xstart, xfinal, converged)
 
    call landscape_saddle_optimize(env, model, set, xstart, result, xfinal)
    converged = result%converged
+   if (present(gmax)) gmax = result%gmax
    write(stdout, '(1x,a,a,a,i6,a,l1,a,es12.4,a,es12.4)') "  ", &
       & landscape_ts_method_name(method), " steps ", result%n_steps, &
       & " converged ", result%converged, ", gmax ", result%gmax, &
@@ -1991,14 +2020,14 @@ subroutine test_dimer_mb(error)
    type(landscape_muller_brown_model) :: model
    type(landscape_result) :: result
    real(wp), allocatable :: x_dimer(:), x_prfo(:)
-   real(wp) :: rmsd
+   real(wp) :: rmsd, gmax_prfo
    logical :: ok
 
    call init(env)
    call new_muller_brown_model(model)
    call run_dimer(env, model, [-0.75_wp, 0.5_wp], x_dimer, result, 2, 'random')
    call run_one(env, error, model, p_landscape_ts_prfo, [-0.75_wp, 0.5_wp], &
-      & x_prfo, ok)
+      & x_prfo, ok, gmax_prfo)
    if (allocated(error)) return
    rmsd = sqrt(sum((x_dimer - x_prfo)**2)/real(size(x_dimer), wp))
    write(stdout, '(1x,a,i4,a,l1,a,es12.4,a,es12.4,a,es12.4)') &
@@ -2010,7 +2039,20 @@ subroutine test_dimer_mb(error)
    call check(error, maxval(abs(x_dimer - mb_saddle)) < 1.0e-3_wp, &
       & "the dimer did not reach the Mueller-Brown saddle point")
    if (allocated(error)) return
-   call check(error, rmsd < 1.0e-3_wp, &
+   ! delivered 7.7397e-05 bohr (AGENTS.md section 2); 2e-4 is 2.6x above it
+   ! and 5x tighter than the 1e-3 tripwire of the other searches.  Measured
+   ! identically on gfortran 12.2.0 and on the gating CI's gfortran 14.4.0
+   ! (both 7.7397e-05 bohr, the converged points equal to 14 digits), so the
+   ! datum is not compiler specific; the two searches' own residuals below
+   ! carry the robustness of the comparison.
+   call check(error, gmax_prfo < 1.0e-4_wp, &
+      & "the P-RFO reference did not converge tightly enough for the comparison")
+   if (allocated(error)) return
+   ! measured 1.0413e-04 hartree/bohr for the dimer
+   call check(error, result%gmax < 1.0e-3_wp, &
+      & "the dimer did not converge tightly enough for the comparison")
+   if (allocated(error)) return
+   call check(error, rmsd < 2.0e-4_wp, &
       & "the dimer and P-RFO results differ")
 
 end subroutine test_dimer_mb

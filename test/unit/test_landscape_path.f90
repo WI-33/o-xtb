@@ -100,6 +100,14 @@ module test_landscape_path
    real(wp), parameter :: leps_e_reactant = -0.154978647146_wp
    !> Closed form barrier of the default LEPS parameters (kcal/mol)
    real(wp), parameter :: leps_barrier = 8.9985_wp
+   !> Tolerance of the LEPS barrier comparison of the four band methods
+   !> (kcal/mol).  The delivered deviations from the closed form value are
+   !> +0.0000 (NEB), +0.0000 (CI-NEB), -0.0004 (AutoNEB) and +0.0003 (String),
+   !> i.e. a few 1e-4 kcal/mol, so this gate **pins** them: it is 500x tighter
+   !> than the 0.5 kcal/mol tripwire it replaces and still 2.5x above the worst
+   !> delivered deviation.  Anything larger is a real change of the band
+   !> machinery and has to be re-baselined in a report, not absorbed here.
+   real(wp), parameter :: leps_barrier_tol = 1.0e-3_wp
    !> Analytic Mueller-Brown saddle point (dimensionless surface coordinates)
    real(wp), parameter :: mb_saddle(2) = [-0.82200156_wp, 0.62431280_wp]
    !> Analytic barrier of the Mueller-Brown surface (kcal/mol): the closed
@@ -139,7 +147,58 @@ module test_landscape_path
       procedure :: hessian => mb_embedding_hessian
    end type mb_embedding_model
 
+   !> LEPS surface that counts how often its potential was evaluated.
+   !>
+   !> The band kernel reports `band%n_eval`, its own count of the evaluations it
+   !> performed; this wrapper makes that number falsifiable, because the count
+   !> of the potential itself is the one number a caller cannot get wrong.  It
+   !> exists for `band-endpoint-cache` (report 223).
+   type, extends(landscape_energy_model) :: counting_leps_model
+      !> Wrapped surface
+      type(landscape_leps_model) :: surface
+      !> Number of `evaluate` calls so far
+      integer :: n_eval = 0
+   contains
+      !> Energy and gradient, counted
+      procedure :: evaluate => counting_leps_evaluate
+      !> Hessian (delegated, not counted)
+      procedure :: hessian => counting_leps_hessian
+   end type counting_leps_model
+
 contains
+
+!> Energy and gradient of the counting LEPS wrapper, one call counted.
+subroutine counting_leps_evaluate(self, x, energy, gradient, fail)
+   !> Model
+   class(counting_leps_model), intent(inout) :: self
+   !> Flattened coordinates (bohr)
+   real(wp), intent(in) :: x(:)
+   !> Energy (hartree)
+   real(wp), intent(out) :: energy
+   !> Flattened gradient (hartree/bohr)
+   real(wp), intent(out) :: gradient(:)
+   !> Failure flag
+   logical, intent(out) :: fail
+
+   self%n_eval = self%n_eval + 1
+   call self%surface%evaluate(x, energy, gradient, fail)
+
+end subroutine counting_leps_evaluate
+
+!> Hessian of the counting LEPS wrapper (delegated, not counted).
+subroutine counting_leps_hessian(self, x, hess, fail)
+   !> Model
+   class(counting_leps_model), intent(inout) :: self
+   !> Flattened coordinates (bohr)
+   real(wp), intent(in) :: x(:)
+   !> Dense Hessian (hartree/bohr^2)
+   real(wp), intent(out) :: hess(:, :)
+   !> Failure flag
+   logical, intent(out) :: fail
+
+   call self%surface%hessian(x, hess, fail)
+
+end subroutine counting_leps_hessian
 
 !> Energy and gradient of the embedded Mueller-Brown surface.
 subroutine mb_embedding_evaluate(self, x, energy, gradient, fail)
@@ -219,6 +278,7 @@ subroutine collect_landscape_path(testsuite)
       new_unittest("align-rotation", test_align_rotation), &
       new_unittest("band-align-effect", test_band_align_effect), &
       new_unittest("band-fixed-endpoints", test_band_fixed_endpoints), &
+      new_unittest("band-endpoint-cache", test_band_endpoint_cache), &
       new_unittest("leps-neb-barrier", test_leps_neb_barrier), &
       new_unittest("leps-cineb-barrier", test_leps_cineb_barrier), &
       new_unittest("cineb-switch-threshold", test_cineb_switch), &
@@ -1129,6 +1189,78 @@ subroutine test_band_fixed_endpoints(error)
 
 end subroutine test_band_fixed_endpoints
 
+!> The two fixed endpoints of a band are evaluated once, not once per iteration.
+!>
+!> The band packs and unpacks only the internal images, so the endpoints keep
+!> their geometry for the whole run; evaluating them again in every iteration
+!> recomputes the same values.  The pinned closed form is
+!>
+!>     `n_eval = n_images + n_iter * (n_images - 2)`
+!>
+!> - the initial band evaluates every image once, every iteration re-evaluates
+!> the internal images only.  The assertion is made twice: against the band's
+!> own counter and against the number of calls the potential actually counted,
+!> so a counter that merely agrees with itself cannot satisfy it, and the old
+!> `n_images + n_iter * n_images` is red by `2 n_iter` (measured at the command
+!> line on the ammonia band: 108 -> 86 for 11 iterations, report 223).
+!>
+!> The second half pins the *values*: the cached endpoint energy is compared
+!> with a fresh evaluation of the same geometry, bit for bit.  That is the
+!> claim the whole change rests on - the engine's `off` restart policy makes a
+!> repeated geometry return an identical pair of values, so the cache cannot
+!> move a number.
+subroutine test_band_endpoint_cache(error)
+   type(error_type), allocatable, intent(out) :: error
+   type(TEnvironment) :: env
+   type(counting_leps_model) :: model
+   type(landscape_path_settings) :: set
+   type(landscape_band_type) :: band
+   real(wp), allocatable :: images(:, :, :), energies(:), forces(:, :, :)
+   real(wp) :: g(9), energy
+   integer :: expected
+   logical :: fail
+
+   call init(env)
+   set%n_images = 7
+   set%printlevel = 0
+   set%max_steps = 5
+   set%climb = .false.
+   set%align = .false.
+
+   call landscape_band_optimize(env, model, set, leps_reactant(), leps_product(), &
+      & images, energies, forces, band)
+   call check(error, allocated(images), "the band returned no images")
+   if (allocated(error)) return
+   call check(error, band%n_iter >= 1,&
+      & "the band took no step, so the iteration count is not exercised")
+   if (allocated(error)) return
+
+   expected = set%n_images + band%n_iter*(set%n_images - 2)
+   write(stdout, '(1x,a,i0,a,i0,a,i0,a,i0)') "  n_images ", set%n_images, &
+      & " n_iter ", band%n_iter, " n_eval ", band%n_eval, &
+      & " potential calls ", model%n_eval
+   call check(error, band%n_eval == expected,&
+      & "band%n_eval is not n_images + n_iter*(n_images-2)")
+   if (allocated(error)) return
+   call check(error, model%n_eval == expected,&
+      & "the potential was called a different number of times than the band "//&
+      & "reports")
+   if (allocated(error)) return
+
+   call model%evaluate(geometry_pack(leps_reactant()), energy, g, fail)
+   call check(error, .not. fail, "the reactant re-evaluation failed")
+   if (allocated(error)) return
+   call check(error, band%energies(1) == energy,&
+      & "the cached reactant energy is not the value a re-evaluation returns")
+   if (allocated(error)) return
+   call model%evaluate(geometry_pack(leps_product()), energy, g, fail)
+   call check(error, .not. fail, "the product re-evaluation failed")
+   if (allocated(error)) return
+   call check(error, band%energies(size(band%energies)) == energy,&
+      & "the cached product energy is not the value a re-evaluation returns")
+
+end subroutine test_band_endpoint_cache
+
 !> Plain NEB on the LEPS surface reproduces the closed form barrier.
 subroutine test_leps_neb_barrier(error)
    type(error_type), allocatable, intent(out) :: error
@@ -1157,13 +1289,13 @@ subroutine test_leps_neb_barrier(error)
    k = band%highest_image
    barrier_kcal = (band%ts_energy - energies(1))*autokcal
    err_kcal = barrier_kcal - leps_barrier
-   call check(error, abs(err_kcal) < 0.5_wp,&
-      & "the NEB barrier deviates from the analytic value by more than 0.5 kcal/mol")
+   call check(error, abs(err_kcal) < leps_barrier_tol,&
+      & "the NEB barrier deviates from the analytic value by more than 1e-3 kcal/mol")
    if (allocated(error)) return
 
    r1 = abs(images(1, 2, k) - images(1, 1, k))
    r2 = abs(images(1, 3, k) - images(1, 2, k))
-   write(stdout, '(1x,a,i0,a,f20.12,a,f12.4,sp,f10.4)') "  NEB highest image ", k, &
+   write(stdout, '(1x,a,i0,a,f20.12,a,f16.10,sp,f12.7)') "  NEB highest image ", k, &
       & " E ", band%ts_energy, " barrier ", barrier_kcal, err_kcal
    write(stdout, '(1x,a,f10.5,a,f10.5,a,f10.5)') "  geometry r12 ", r1, " r23 ", r2, &
       & " r* ", leps_r_star
@@ -1209,11 +1341,11 @@ subroutine test_leps_cineb_barrier(error)
    k = band%climbing_image
    barrier_kcal = (band%ts_energy - energies(1))*autokcal
    err_kcal = barrier_kcal - leps_barrier
-   write(stdout, '(1x,a,i0,a,i0,a,f20.12,a,f12.4,sp,f10.4)') "  CI-NEB image ", k, &
+   write(stdout, '(1x,a,i0,a,i0,a,f20.12,a,f16.10,sp,f12.7)') "  CI-NEB image ", k, &
       & " ignited at ", band%ignition_iteration, " E ", band%ts_energy, &
       & " barrier ", barrier_kcal, err_kcal
-   call check(error, abs(err_kcal) < 0.5_wp,&
-      & "the CI-NEB barrier deviates from the analytic value by more than 0.5 kcal/mol")
+   call check(error, abs(err_kcal) < leps_barrier_tol,&
+      & "the CI-NEB barrier deviates from the analytic value by more than 1e-3 kcal/mol")
    if (allocated(error)) return
    ! the climbing image force criterion has to be met as well
    call check(error, band%ci_f_rms <= set%f_rms_max_tol,&
@@ -2585,11 +2717,11 @@ subroutine test_leps_autoneb(error)
    err_kcal = barrier_kcal - leps_barrier
    r1 = abs(images(1, 2, k) - images(1, 1, k))
    r2 = abs(images(1, 3, k) - images(1, 2, k))
-   write(stdout, '(1x,a,i0,a,i0,a,f16.10,a,f12.4,sp,f10.4,a,2f10.6)') "  AutoNEB stages ", &
+   write(stdout, '(1x,a,i0,a,i0,a,f16.10,a,f16.10,sp,f12.7,a,2f10.6)') "  AutoNEB stages ", &
       & auto%n_stages, ", images ", auto%n_images, ", E ", auto%ts_energy, &
       & "  barrier ", barrier_kcal, err_kcal, "  r12/r23 ", r1, r2
-   call check(error, abs(err_kcal) < 0.5_wp,&
-      & "the AutoNEB barrier deviates from the analytic value by more than 0.5 kcal/mol")
+   call check(error, abs(err_kcal) < leps_barrier_tol,&
+      & "the AutoNEB barrier deviates from the analytic value by more than 1e-3 kcal/mol")
    if (allocated(error)) return
    call check(error, abs(r1 - leps_r_star) < 5.0e-2_wp,&
       & "the AutoNEB saddle candidate is not at the closed form geometry")
@@ -2730,14 +2862,14 @@ subroutine test_leps_string(error)
    r2 = abs(nodes(1, 3, k) - nodes(1, 2, k))
    r13 = abs(nodes(1, 3, k) - nodes(1, 1, k))
    err_kcal = string%barrier*autokcal - barrier_ref
-   write(stdout, '(1x,a,i4,a,i4,a,f16.10,a,f12.4,sp,f10.4)') "  string nodes ", &
+   write(stdout, '(1x,a,i4,a,i4,a,f16.10,a,f16.10,sp,f12.7)') "  string nodes ", &
       & string%n_nodes, " grow ", string%n_grow, " E ", string%ts_energy, &
       & "  barrier ", string%barrier*autokcal, err_kcal
    write(stdout, '(1x,a,3f12.6,a,l1,a,es12.5,a,es12.5)') "  string r12/r23/r13 ", &
       & r1, r2, r13, "  converged ", string%converged, "  f_avg ", string%f_rms_avg, &
       & "  f_max ", string%f_rms_max
-   call check(error, abs(err_kcal) < 0.5_wp,&
-      & "the string barrier deviates from the analytic value by more than 0.5 kcal/mol")
+   call check(error, abs(err_kcal) < leps_barrier_tol,&
+      & "the string barrier deviates from the analytic value by more than 1e-3 kcal/mol")
    if (allocated(error)) return
    call check(error, abs(r1 - leps_r_star) < 1.0e-2_wp,&
       & "the climbing node is not at the closed form saddle point")

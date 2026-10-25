@@ -80,6 +80,22 @@ module test_landscape_irc
 
    !> Analytic Mueller-Brown saddle point (surface coordinates)
    real(wp), parameter :: mb_saddle(2) = [-0.82200156_wp, 0.62431280_wp]
+   !> Delivered maximum deviation of each integrator from the reference path
+   !> on the analytic Mueller-Brown surface (bohr), forward and backward, in
+   !> the order gs / lqa / hpc / eulerpc (report
+   !> `docs/_simplify-recon/64-irc-gs-lagrange.md` section 2.3).  These are the
+   !> M6 acceptance numbers; the gate below pins them instead of bounding the
+   !> worst of the four by 0.15 bohr, which was 6x looser than the largest
+   !> delivered value and could not see a real drift of a single method.
+   real(wp), parameter :: mb_mep_dev_fwd(4) = [0.0191945_wp, 0.0065749_wp, &
+      & 0.0021531_wp, 0.0257361_wp]
+   !> Same, backward
+   real(wp), parameter :: mb_mep_dev_bwd(4) = [0.0343972_wp, 0.0191347_wp, &
+      & 0.0139460_wp, 0.0280571_wp]
+   !> Tolerance of the per-method comparison (bohr): the seven digits the test
+   !> prints, plus a 200x margin over their own round-off and 1.5e4x tighter
+   !> than the 0.15 bohr tripwire of the previous gate
+   real(wp), parameter :: mb_mep_dev_tol = 1.0e-5_wp
    !> Analytic Mueller-Brown global minimum
    real(wp), parameter :: mb_min1(2) = [-0.55822363_wp, 1.44172584_wp]
    !> Analytic Mueller-Brown minimum connected to the saddle by the second
@@ -1463,10 +1479,16 @@ subroutine test_four_method_crosscheck(error)
       dev_f(i) = max_path_deviation(fwd(i), reference_fwd)
       dev_b(i) = max_path_deviation(bwd(i), reference_bwd)
    end do
-   write(stdout, '(1x,a,4f10.5)') "  MB max MEP deviation fwd (gs/lqa/hpc/eulerpc) ", dev_f
-   write(stdout, '(1x,a,4f10.5)') "  MB max MEP deviation bwd (gs/lqa/hpc/eulerpc) ", dev_b
-   call check(error, maxval(dev_f) < 0.15_wp .and. maxval(dev_b) < 0.15_wp, &
-      & "an integrator left the analytic MEP by more than 0.15 bohr")
+   write(stdout, '(1x,a,4f12.7)') "  MB max MEP deviation fwd (gs/lqa/hpc/eulerpc) ", dev_f
+   write(stdout, '(1x,a,4f12.7)') "  MB max MEP deviation bwd (gs/lqa/hpc/eulerpc) ", dev_b
+   do i = 1, 4
+      call check(error, abs(dev_f(i) - mb_mep_dev_fwd(i)) < mb_mep_dev_tol, &
+         & "a forward MEP deviation left the delivered value")
+      if (allocated(error)) return
+      call check(error, abs(dev_b(i) - mb_mep_dev_bwd(i)) < mb_mep_dev_tol, &
+         & "a backward MEP deviation left the delivered value")
+      if (allocated(error)) return
+   end do
    if (allocated(error)) return
 
    max_gap_f = 0.0_wp

@@ -38,7 +38,7 @@ project(
 # soname `liboxtb.so.6`), the `libxtb.*` compatibility links and the CMake
 # package version file, i.e. the ABI lineage inherited from upstream xTB, which
 # must not move just because the command grew a product version of its own.
-set(OXTB_PRODUCT_VERSION "0.3.1")
+set(OXTB_PRODUCT_VERSION "0.3.2")
 
 # Name of the command line program.  The project and its libraries are called
 # `o-xtb`, the installed/registered command stays `oxtb` (the `xtb` module and
@@ -582,6 +582,24 @@ install(
 if(WITH_TESTS)
    enable_testing()
    add_subdirectory("test")
+endif()
+
+# Wall-time benchmark of the PES tasks (bench/README.md).
+#
+# A developer target, **not** a test: it prints timings, which depend on the
+# machine, the load and the BLAS, so nothing may pass or fail on them.  It is
+# therefore an on-demand custom target (never part of `all`, never in ctest)
+# and it is only defined when a Python 3 interpreter is available.
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+   add_custom_target(benchmark
+      COMMAND "${Python3_EXECUTABLE}"
+              "${PROJECT_SOURCE_DIR}/bench/tools/bench_landscape.py"
+              "$<TARGET_FILE:${XTB_EXE_NAME}>"
+              --work-dir "${PROJECT_BINARY_DIR}/bench"
+      WORKING_DIRECTORY "${PROJECT_BINARY_DIR}"
+      USES_TERMINAL
+      COMMENT "Timing the PES tasks (prints numbers, not verdicts)")
 endif()
 
 #################################

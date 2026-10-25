@@ -92,7 +92,8 @@ module xtb_landscape_path_gsm
    use xtb_landscape_coords, only : geometry_pack, align_geometry
    use xtb_landscape_lbfgs, only : landscape_lbfgs_type, new_landscape_lbfgs
    use xtb_landscape_path_neb, only : landscape_band_energies, landscape_band_align, &
-      & landscape_band_measures, landscape_band_converged
+      & landscape_band_measures, landscape_band_converged, &
+      & landscape_band_endpoint_cache
    use xtb_landscape_path_cineb, only : landscape_cineb_force
    use xtb_landscape_path_string, only : landscape_string_normal_force, &
       & landscape_string_growth_indicator, landscape_string_spacing, &
@@ -668,8 +669,12 @@ subroutine landscape_string_relax(env, model, settings, nodes, energies, gradien
    real(wp), allocatable :: d(:), g(:), gnew(:), x(:), xnew(:), step(:)
    real(wp), allocatable :: en_new(:), grad_new(:, :, :)
    real(wp) :: energy0, slope, alpha
-   integer :: n, nat, ndim, it, ls
+   integer :: n, nat, ndim, it, ls, n_done
    logical :: accepted
+   ! The two endpoints of the string are the fixed reactant and product, so
+   ! their energy and gradient are evaluated once and reused, exactly like the
+   ! fixed endpoints of a band (report 223).
+   type(landscape_band_endpoint_cache) :: endpoints
 
    fail = .true.
    nat = size(nodes, 2)
@@ -685,9 +690,10 @@ subroutine landscape_string_relax(env, model, settings, nodes, energies, gradien
    nodes = reparam
    string%n_reparameterize = string%n_reparameterize + 1
 
-   call landscape_band_energies(env, model, nodes, energies, gradients, fail)
+   call landscape_band_energies(env, model, nodes, energies, gradients, fail, &
+      & endpoints, n_done)
    if (fail) return
-   string%n_eval = string%n_eval + n
+   string%n_eval = string%n_eval + n_done
    call build_forces(settings, nodes, gradients, tau, forces, string%f_rms_avg, &
       & string%f_rms_max)
    do it = 0, settings%max_steps
@@ -735,13 +741,14 @@ subroutine landscape_string_relax(env, model, settings, nodes, energies, gradien
          ! (it is a re-parametrisation, not a displacement), so including it
          ! lets it dominate the energy change and every step fails the Armijo
          ! test on the Mueller-Brown surface.
-         call landscape_band_energies(env, model, trial, en_new, grad_new, fail)
+         call landscape_band_energies(env, model, trial, en_new, grad_new, fail, &
+            & endpoints, n_done)
          if (fail) then
             call env%error("a string node could not be evaluated", source)
             string%message = "a string node could not be evaluated"
             return
          end if
-         string%n_eval = string%n_eval + n
+         string%n_eval = string%n_eval + n_done
          if (sum(en_new(2:n - 1)) <= energy0 + string_ls_armijo*alpha*slope) then
             accepted = .true.
             exit
@@ -754,13 +761,14 @@ subroutine landscape_string_relax(env, model, settings, nodes, energies, gradien
       call landscape_string_reparameterize(trial, reparam)
       trial = reparam
       string%n_reparameterize = string%n_reparameterize + 1
-      call landscape_band_energies(env, model, trial, en_new, grad_new, fail)
+      call landscape_band_energies(env, model, trial, en_new, grad_new, fail, &
+         & endpoints, n_done)
       if (fail) then
          call env%error("a string node could not be evaluated", source)
          string%message = "a string node could not be evaluated"
          return
       end if
-      string%n_eval = string%n_eval + n
+      string%n_eval = string%n_eval + n_done
 
       call build_forces(settings, trial, grad_new, tau, forces, string%f_rms_avg, &
          & string%f_rms_max)
@@ -783,12 +791,13 @@ subroutine landscape_string_relax(env, model, settings, nodes, energies, gradien
 
    ! one final evaluation keeps energies, gradients and forces consistent with
    ! the node positions, whatever way the loop was left
-   call landscape_band_energies(env, model, nodes, energies, gradients, fail)
+   call landscape_band_energies(env, model, nodes, energies, gradients, fail, &
+      & endpoints, n_done)
    if (fail) then
       string%message = "a string node could not be evaluated"
       return
    end if
-   string%n_eval = string%n_eval + n
+   string%n_eval = string%n_eval + n_done
    call build_forces(settings, nodes, gradients, tau, forces, string%f_rms_avg, &
       & string%f_rms_max)
 

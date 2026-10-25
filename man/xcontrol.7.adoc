@@ -6,7 +6,7 @@ XCONTROL(7)
 
 NAME
 ----
-xcontrol - instruction file for `oxtb(1)` (o-xtb 0.3.1, xTB 6.7.1 Hamiltonian),
+xcontrol - instruction file for `oxtb(1)` (o-xtb 0.3.2, xTB 6.7.1 Hamiltonian),
 the xcontrol input of xTB 6.0 and newer
 
 SYNOPSIS

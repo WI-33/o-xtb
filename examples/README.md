@@ -16,19 +16,24 @@ The examples were produced with the installed release:
 OxTB version 0.1.0   (xTB engine 6.7.1)   Compiled on 2026/10/16 from 8a0ad67
 ```
 
-The current release is **0.3.1**.  Since the examples were produced the version string has moved
-four times (`0.1.0` -> `0.2.0` -> `0.2.1` -> `0.3.0` -> `0.3.1`), which changes only the `OxTB version`
-line of the banner and the `oxtb_version` field of the `--ljson` provenance block.  The changes under
-`src/` in the range `8a0ad67..HEAD` are one guard in `src/disp/dftd4.F90` (`zeta`/`dzeta`: `qmod.lt.0`
--> `qmod.le.0`), which fires only when a Mulliken charge is **exactly** zero, the help/CLI plumbing
-of the machine-readable `--help-values` value sets (`src/xhelp.f90`, `src/prog/main.F90`), which does
-not touch the energy, gradient or Hessian code, and - since 0.3.0 - the suite's own command surface:
-one `Engine:` / `Saddle search:` / `IRC integrator:` banner per engine-bearing run type in place of
-the retired `[NOTICE]` lines, the Hessian build announcement, `--lopt-recalc`, the stricter
-positional-argument and numeric-flag checks, one set of number formatters and one convergence-level
-list, and the `aatoau`-derived Angstrom thresholds of `src/landscape/types/settings.f90`.  Of these
-only the thresholds reach a trajectory, and they bind in the dimer path alone (measured on the
-bent-HCN case: -3.2e-11 Eh, at most 1.47e-7 bohr).  The record was re-measured on three cases: the
+The current release is **0.3.2**.  Since the examples were produced the version string has moved
+five times (`0.1.0` -> `0.2.0` -> `0.2.1` -> `0.3.0` -> `0.3.1` -> `0.3.2`), which changes only the
+`OxTB version` line of the banner and the `oxtb_version` field of the `--ljson` provenance block.
+The changes under `src/` in the range `8a0ad67..HEAD` are one guard in `src/disp/dftd4.F90`
+(`zeta`/`dzeta`: `qmod.lt.0` -> `qmod.le.0`), which fires only when a Mulliken charge is **exactly**
+zero, the help/CLI plumbing of the machine-readable `--help-values` value sets (`src/xhelp.f90`,
+`src/prog/main.F90`), which does not touch the energy, gradient or Hessian code, the suite's own
+command surface (since 0.3.0): one `Engine:` / `Saddle search:` / `IRC integrator:` banner per
+engine-bearing run type in place of the retired `[NOTICE]` lines, the Hessian build announcement,
+`--lopt-recalc`, the stricter positional-argument and numeric-flag checks, one set of number
+formatters and one convergence-level list, and the `aatoau`-derived Angstrom thresholds of
+`src/landscape/types/settings.f90`, and two evaluation-count changes (since 0.3.1) in
+`src/landscape/path/` and `src/landscape/tasks/ts.f90`: the two fixed band endpoints are evaluated
+once instead of every iteration (`string`/`gsm` share that cache) and a failed transition-state
+search no longer pays for a confirmation Hessian.  Of these only the thresholds reach a trajectory,
+and they bind in the dimer path alone (measured on the bent-HCN case: -3.2e-11 Eh, at most
+1.47e-7 bohr); the two evaluation-count changes leave every path bitwise identical and only cut the
+number of energy and gradient evaluations.  The record was re-measured on three cases: the
 relaxed distance scan `lscan-01` - the case that reaches the exactly-zero-charge boundary geometry -
 still reproduces its shipped `xtbscan.log` (1225 lines, 35 per-point energies, `diff`-clean after
 normalising the build hash in the header), `sp-01` still gives the total energy
@@ -36,9 +41,10 @@ normalising the build hash in the header), `sp-01` still gives the total energy
 byte; the four pinned water single points are unchanged as well.  So the recorded numbers still
 stand, while the logs' banner and progress text are historical - the engine banner is new, so a
 diff of the text is expected.  The features added since the examples were produced - the man-page
-render pipeline, the extended coverage gate, the `--help-values` value sets and the shell
-completions - are command-line surface; the examples were **not** re-run for them, and neither for
-the dimer case the thresholds touch.
+render pipeline, the extended coverage gate, the `--help-values` value sets, the shell completions,
+the `bench/` wall-time benchmark and the `xtb/landscape-precision` test - are command-line or
+test-side surface; the examples were **not** re-run for them, and neither for the dimer case the
+thresholds touch.
 
 ## How to run a case
 
