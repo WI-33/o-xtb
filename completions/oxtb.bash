@@ -46,6 +46,7 @@ _oxtb_spellings='
   --lopt-recalc
   --lopt-hess-step
   --lopt-sccacc
+  --lopt-hess-jobs
   --lopt-restart
   --lopt-hessian-file
   --lscan-coord
@@ -68,6 +69,7 @@ _oxtb_spellings='
   --lscan-max-steps
   --lscan-hess-step
   --lscan-sccacc
+  --lscan-hess-jobs
   --lscan-hessian
   --lscan-hessian-file
   --lts-method
@@ -101,6 +103,7 @@ _oxtb_spellings='
   --lts-hess-step
   --lts-step
   --lts-sccacc
+  --lts-hess-jobs
   --lts-product
   --lts-images
   --lts-kmin
@@ -155,12 +158,14 @@ _oxtb_spellings='
   --lirc-hess-step
   --lirc-step-hess
   --lirc-sccacc
+  --lirc-hess-jobs
   --lirc-restart
   --lvib-hessian
   --lvib-hessian-file
   --lvib-hess-step
   --lvib-step
   --lvib-sccacc
+  --lvib-hess-jobs
   --lvib-restart
   --lvib-odlr
   --lvib-no-project
@@ -445,7 +450,7 @@ _oxtb()
         _oxtb_files "$cur"
         return 0
         ;;
-    --cycles|--imagmin|--imagmax|--metadyn|--modef|--ewin|--lopt-max-steps|--lopt-recalc|--lopt-hess-step|--lopt-sccacc|--lscan-atoms|--lscan-step|--lscan-nstep|--lscan-fc|--lscan-expo|--lscan-max-steps|--lscan-hess-step|--lscan-sccacc|--lts-trust|--lts-trust-max|--lts-hlow|--lts-max-steps|--lts-mode-overlap-min|--lts-alpha|--lts-micro-cycles|--lts-target-mode|--lts-escape-step|--lts-delta|--lts-dr|--lts-rot-max-iter|--lts-rot-alpha|--lts-rot-frms|--lts-seed|--lts-step-max|--lts-step0|--lts-translate-max-iter|--lts-recalc|--lts-hess-step|--lts-step|--lts-sccacc|--lts-product|--lts-images|--lts-kmin|--lts-kmax|--lts-kdecay|--lts-climb-switch|--lts-max-displ|--lts-frms-avg|--lts-frms-max|--lts-autoneb-nstart|--lts-autoneb-max-paths|--lts-autoneb-max-depth|--lts-autoneb-restart|--lts-string-nnodes|--lts-string-grow-tol|--lts-string-ds|--lts-string-nu2|--lts-string-grow-steps|--lirc-step|--lirc-max-steps|--lirc-target-mode|--lirc-micro-cycles|--lirc-micro-thresh|--lirc-euler-n|--lirc-loose-cycles|--lirc-mbs-tol|--lirc-mbs-max-k|--lirc-mbs-points|--lirc-dwi-n|--lirc-e-rise|--lirc-erise-steps|--lirc-grad-tol|--lirc-osc-window|--lirc-recalc|--lirc-rmsd-end|--lirc-hess-step|--lirc-step-hess|--lirc-sccacc|--lvib-hess-step|--lvib-step|--lvib-sccacc|--lvib-temp|--lvib-rotor-cutoff|--lvib-imag-cutoff|--lvib-freq-scal|--ceh|--nat|--dipro|-c|--chrg|--charge|-u|--uhf|--efield|--etemp|-a|--acc|--iterations|--maxiterations|--oniom|--gbe|--gb|--cosmo|--tmcosmo|--cpcmx|--namespace|-P|--parallel|--blas-threads)
+    --cycles|--imagmin|--imagmax|--metadyn|--modef|--ewin|--lopt-max-steps|--lopt-recalc|--lopt-hess-step|--lopt-sccacc|--lopt-hess-jobs|--lscan-atoms|--lscan-step|--lscan-nstep|--lscan-fc|--lscan-expo|--lscan-max-steps|--lscan-hess-step|--lscan-sccacc|--lscan-hess-jobs|--lts-trust|--lts-trust-max|--lts-hlow|--lts-max-steps|--lts-mode-overlap-min|--lts-alpha|--lts-micro-cycles|--lts-target-mode|--lts-escape-step|--lts-delta|--lts-dr|--lts-rot-max-iter|--lts-rot-alpha|--lts-rot-frms|--lts-seed|--lts-step-max|--lts-step0|--lts-translate-max-iter|--lts-recalc|--lts-hess-step|--lts-step|--lts-sccacc|--lts-hess-jobs|--lts-product|--lts-images|--lts-kmin|--lts-kmax|--lts-kdecay|--lts-climb-switch|--lts-max-displ|--lts-frms-avg|--lts-frms-max|--lts-autoneb-nstart|--lts-autoneb-max-paths|--lts-autoneb-max-depth|--lts-autoneb-restart|--lts-string-nnodes|--lts-string-grow-tol|--lts-string-ds|--lts-string-nu2|--lts-string-grow-steps|--lirc-step|--lirc-max-steps|--lirc-target-mode|--lirc-micro-cycles|--lirc-micro-thresh|--lirc-euler-n|--lirc-loose-cycles|--lirc-mbs-tol|--lirc-mbs-max-k|--lirc-mbs-points|--lirc-dwi-n|--lirc-e-rise|--lirc-erise-steps|--lirc-grad-tol|--lirc-osc-window|--lirc-recalc|--lirc-rmsd-end|--lirc-hess-step|--lirc-step-hess|--lirc-sccacc|--lirc-hess-jobs|--lvib-hess-step|--lvib-step|--lvib-sccacc|--lvib-hess-jobs|--lvib-temp|--lvib-rotor-cutoff|--lvib-imag-cutoff|--lvib-freq-scal|--ceh|--nat|--dipro|-c|--chrg|--charge|-u|--uhf|--efield|--etemp|-a|--acc|--iterations|--maxiterations|--oniom|--gbe|--gb|--cosmo|--tmcosmo|--cpcmx|--namespace|-P|--parallel|--blas-threads)
         # an argument without a value set: no candidates
         COMPREPLY=()
         return 0

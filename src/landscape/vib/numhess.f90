@@ -125,7 +125,7 @@ subroutine landscape_vib_hessian(env, mol, chk, calc, settings, hess, energy, &
    ! to a default backend.
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
       & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
-      & printlevel=settings%printlevel)
+      & printlevel=settings%printlevel, jobs=settings%engine%hess_jobs)
    if (.not. allocated(hp)) then
       fail = .true.
       call engine%destroy()

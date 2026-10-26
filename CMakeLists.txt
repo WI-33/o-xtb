@@ -38,7 +38,7 @@ project(
 # soname `liboxtb.so.6`), the `libxtb.*` compatibility links and the CMake
 # package version file, i.e. the ABI lineage inherited from upstream xTB, which
 # must not move just because the command grew a product version of its own.
-set(OXTB_PRODUCT_VERSION "0.3.2")
+set(OXTB_PRODUCT_VERSION "0.4.0")
 
 # Name of the command line program.  The project and its libraries are called
 # `o-xtb`, the installed/registered command stays `oxtb` (the `xtb` module and

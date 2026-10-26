@@ -276,7 +276,7 @@ subroutine landscape_ts(env, mol, chk, calc, settings, result)
    call new_landscape_engine(engine, ctrl)
    call new_landscape_hessian_provider(env, settings%hessian_source, hp, &
       & sccacc=settings%engine%hess_acc, filename=settings%hessian_file, &
-      & printlevel=settings%printlevel)
+      & printlevel=settings%printlevel, jobs=settings%engine%hess_jobs)
    if (.not. allocated(hp)) then
       result%message = "transition state search failed"
       call engine%destroy()
@@ -413,17 +413,22 @@ subroutine write_json(env, mol, settings, result, n_scf_fail)
 
    status = landscape_json_status_ok
    if (.not. result%converged) status = landscape_json_status_incomplete
-   ! A search that did not end on a first order saddle (or a run with an
-   ! unconverged SCC) has no usable result; the task reports both through
-   ! `env` and exits non-zero.  The predicate is "the confirmation ran and
-   ! rejected the point", not "the search converged to a non-saddle":
-   ! `confirm_saddle` itself sets `converged = .false.` for the 0 or >1
-   ! imaginary mode verdict (H2), so a `result%converged` guard cannot see it
-   ! and would downgrade that error to `incomplete` (report 224, finding 1).
-   ! `n_imag` is -1 exactly when the confirmation did not run - a failed
-   ! search, or `--lts-no-verify` - so a search that exhausted its budget
-   ! keeps `incomplete` and its own message.
-   if (settings%verify_ts .and. result%n_imag >= 0 .and. .not. result%is_saddle) then
+   ! A search that did not end on a confirmed first order saddle has no usable
+   ! result; the task reports that through `env` and exits non-zero.  The
+   ! predicate covers **three** outcomes, and each of them was lost once by a
+   ! predicate written on one of the others (reports 224 and 227):
+   !  * the search converged and the confirmation **rejected** the point: it
+   !    sets `converged = .false.` for the 0 or >1 imaginary mode verdict (H2),
+   !    so a `result%converged` guard cannot see it (`n_imag >= 0`,
+   !    `is_saddle` false);
+   !  * the search **converged** and the confirmation could not be **built** or
+   !    analysed: `n_imag` stays at -1 and `is_saddle` false, so an
+   !    `n_imag >= 0` guard cannot see it - the document then contradicted two
+   !    `env` errors and the exit status (report 227, finding 7);
+   !  * the search **did not converge**: nothing was confirmed, `n_imag` is -1
+   !    and `converged` false, so it keeps `incomplete` and its own message.
+   if (settings%verify_ts .and. .not. result%is_saddle .and. &
+         & (result%n_imag >= 0 .or. result%converged)) then
       status = landscape_json_status_error
    end if
    if (n_scf_fail > 0) status = landscape_json_status_error
@@ -482,11 +487,17 @@ subroutine confirm_saddle(env, mol, chk, engine, settings, result)
 
    ! --- first analysis with the configured finite difference parameters ---
    call build_confirmation_hessian(env, mol, chk, engine, hess, fail)
-   if (fail) return
+   if (fail) then
+      result%message = "the saddle confirmation could not be built; the "//&
+         & "located point is unconfirmed"
+      return
+   end if
    call landscape_vib_analysis(env, mol, hess, vib_settings, vib, fail)
    if (fail) then
       call env%warning("the saddle confirmation failed; the imaginary mode "//&
          & "count is unknown", 'landscape_ts')
+      result%message = "the saddle confirmation failed; the located point "//&
+         & "is unconfirmed"
       return
    end if
    imag_freq = lowest_internal_frequency(vib, n3)

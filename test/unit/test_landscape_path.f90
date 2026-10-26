@@ -62,6 +62,7 @@ module test_landscape_path
       & landscape_idpp_objective, landscape_idpp_pair_indices, landscape_idpp_pair_count
    use xtb_landscape_path_neb, only : landscape_band_optimize, landscape_band_type, &
       & landscape_band_build_path, landscape_band_energies, landscape_band_forces, &
+      & landscape_band_endpoint_cache, &
       & landscape_band_align, landscape_band_measures, landscape_band_converged, &
       & landscape_neb_tangent, landscape_neb_springs, landscape_neb_force
    use xtb_landscape_path_cineb, only : landscape_cineb_force, &
@@ -1215,9 +1216,12 @@ subroutine test_band_endpoint_cache(error)
    type(counting_leps_model) :: model
    type(landscape_path_settings) :: set
    type(landscape_band_type) :: band
+   type(landscape_band_endpoint_cache) :: cache
    real(wp), allocatable :: images(:, :, :), energies(:), forces(:, :, :)
+   real(wp), allocatable :: band_images(:, :, :), shifted_images(:, :, :)
+   real(wp), allocatable :: band_energy(:), band_grad(:, :, :)
    real(wp) :: g(9), energy
-   integer :: expected
+   integer :: expected, n_eval
    logical :: fail
 
    call init(env)
@@ -1258,6 +1262,48 @@ subroutine test_band_endpoint_cache(error)
    if (allocated(error)) return
    call check(error, band%energies(size(band%energies)) == energy,&
       & "the cached product energy is not the value a re-evaluation returns")
+   if (allocated(error)) return
+
+   ! The cache belongs to **one** band: a second band with different endpoints
+   ! must not read the first band's values (report 227, finding 9).  The three
+   ! calls below are the same band twice and then a band whose reactant moved by
+   ! 0.05 bohr, so the drop branch of `landscape_band_energies` decides whether
+   ! the third call costs 3 or 5 evaluations.  With the drop disabled, the
+   ! shifted band answers both endpoints from the cache (n_evaluated 3).
+   set%n_images = 5
+   call landscape_band_build_path(env, set, leps_reactant(), leps_product(), &
+      & band_images, fail)
+   call check(error, .not. fail, "the second band could not be built")
+   if (allocated(error)) return
+   call landscape_band_energies(env, model, band_images, band_energy, band_grad, &
+      & fail, endpoints=cache, n_evaluated=n_eval)
+   call check(error, .not. fail, "the first evaluation of the cached band failed")
+   if (allocated(error)) return
+   call check(error, n_eval == size(band_images, 3),&
+      & "the call that fills the endpoint cache did not evaluate every image")
+   if (allocated(error)) return
+   call landscape_band_energies(env, model, band_images, band_energy, band_grad, &
+      & fail, endpoints=cache, n_evaluated=n_eval)
+   call check(error, .not. fail, "the second evaluation of the cached band failed")
+   if (allocated(error)) return
+   call check(error, n_eval == size(band_images, 3) - 2,&
+      & "the two cached endpoints were evaluated again")
+   if (allocated(error)) return
+   shifted_images = band_images
+   shifted_images(1, 1, 1) = shifted_images(1, 1, 1) + 0.05_wp
+   call landscape_band_energies(env, model, shifted_images, band_energy, band_grad, &
+      & fail, endpoints=cache, n_evaluated=n_eval)
+   call check(error, .not. fail, "the shifted band failed")
+   if (allocated(error)) return
+   call check(error, n_eval == size(shifted_images, 3),&
+      & "the endpoint cache answered a band with shifted endpoints from the "//&
+      & "first band")
+   if (allocated(error)) return
+   call model%evaluate(geometry_pack(shifted_images(:, :, 1)), energy, g, fail)
+   call check(error, .not. fail, "the shifted reactant re-evaluation failed")
+   if (allocated(error)) return
+   call check(error, band_energy(1) == energy,&
+      & "the shifted reactant energy is the cached value of the first band")
 
 end subroutine test_band_endpoint_cache
 

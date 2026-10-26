@@ -776,6 +776,14 @@ HNC_LINEAR = ("3\nlinear HNC (a minimum)\n"
               "C  0.0000000  0.0000000  0.0000000\n"
               "H  0.0000000 -1.0500000  0.0000000\n")
 
+#> The bent HCN, the transition state guess of the `--lts` tests.  The dimer
+#> search converges on it, so it reaches the confirmation - which is what the
+#> third status branch of `check_ts_status` needs.
+HCN_BENT = ("3\nbent HCN (transition state guess)\n"
+            "H  0.0000000  1.0500000  0.0000000\n"
+            "C  0.0000000  0.0000000  0.0000000\n"
+            "N  1.1560000  0.0000000  0.0000000\n")
+
 
 def check_ts_failure(exe, inp, rundir):
     """A failed `--lts` search keeps its own message and its own cost.
@@ -890,12 +898,13 @@ def check_ts_failure(exe, inp, rundir):
 
 
 def check_ts_status(exe, inp, rundir):
-    """The two `--lts` failure statuses of the document, side by side.
+    """The three `--lts` failure statuses of the document, side by side.
 
     `landscape_json_status_incomplete` (1) means "the result is written but a
     criterion was not met"; `landscape_json_status_error` (-1) means "an error
     was reported through `env`" (`src/landscape/types/json.f90`).  The task has
-    exactly two ways to fail a search and both must map onto that contract:
+    exactly three ways to fail a search and all three must map onto that
+    contract:
 
       * a search that ran out of steps keeps its own message and reports 1 -
         the search found nothing to confirm, so `n_imag` stays at its "not
@@ -906,14 +915,24 @@ def check_ts_status(exe, inp, rundir):
         confirmation clears `result%converged` when it rejects the point, so a
         status predicate written on `converged` never sees it and downgrades
         the document to 1, which is what report 224 (finding 1) found and this
-        check pins.
+        check pins;
+      * a search that **converged** but whose confirmation could not be
+        **built** reports -1 as well, with a message that says the point is
+        unconfirmed.  `n_imag` is -1 and `is_saddle` false here too, and
+        `converged` is still true, so a predicate written on `n_imag >= 0`
+        reports `status 0 / ok / converged true` next to two `env` errors and
+        an exit status of 1 - the mirror image of the branch above, which is
+        what report 227 (finding 7) found and this check pins.
     """
     os.makedirs(rundir, exist_ok=True)
-    for name in ("exhausted", "rejected"):
+    for name in ("exhausted", "rejected", "unconfirmed"):
         shutil.rmtree(os.path.join(rundir, name), ignore_errors=True)
     hnc = os.path.join(os.path.abspath(rundir), "hnc-linear.xyz")
     with open(hnc, "w") as handle:
         handle.write(HNC_LINEAR)
+    hcn = os.path.join(os.path.abspath(rundir), "hcn-bent.xyz")
+    with open(hcn, "w") as handle:
+        handle.write(HCN_BENT)
 
     def document(path, output):
         try:
@@ -963,9 +982,43 @@ def check_ts_status(exe, inp, rundir):
                                                            or ""):
         fail("the rejected point lost the confirmation's message, the "
              "document says %r" % doc.get("message"), output)
+
+    # (c) converged, but the confirmation cannot be built: the search is
+    # reported as converged and unconfirmed, never as ok.  The file Hessian
+    # source is pointed at a name that does not exist, which is the cheapest
+    # way to reach the two early returns of `confirm_saddle`.
+    status, output = run(exe, hcn, ["--gfn", "2", "--lts", "--lts-method",
+                                    "dimer", "--lts-hessian", "file",
+                                    "--lts-hessian-file",
+                                    os.path.join(rundir, "no-such-hessian"),
+                                    "--norestart", "--ljson"],
+                         os.path.join(rundir, "unconfirmed"))
+    if status == 0:
+        fail("a run whose saddle confirmation could not be built exited 0",
+             output)
+    doc = document(os.path.join(rundir, "unconfirmed", "landscape_ts.json"),
+                   output)
+    if doc.get("status") != -1 or doc.get("status_name") != "error":
+        fail("the unconfirmed point reports %s / %s, expected -1 / error; a "
+             "predicate written on n_imag alone reports 0 / ok here"
+             % (doc.get("status"), doc.get("status_name")), output)
+    if not doc.get("converged"):
+        fail("the unconfirmed point does not report that its search "
+             "converged", output)
+    if doc["counters"].get("n_imag") != -1:
+        fail("the unconfirmed point reports n_imag %s, expected -1 (the "
+             "confirmation was not built)"
+             % doc["counters"].get("n_imag"), output)
+    message = doc.get("message") or ""
+    if "could not be built" not in message:
+        fail("the unconfirmed point does not name the failed confirmation, "
+             "the document says %r" % message, output)
+    if "unconfirmed" not in message or "first order saddle point" in message:
+        fail("the unconfirmed point claims something about a saddle it "
+             "never confirmed, the document says %r" % message, output)
     print("ts-status: an exhausted search is status 1 with its own message, a "
-          "search that converged onto a minimum is status -1 with the "
-          "confirmation's verdict")
+          "search that converged onto a minimum and one whose confirmation "
+          "could not be built are status -1 with the confirmation's verdict")
 
 
 def check_layers(xtb, tester, inp, rundir, ts_input=None):

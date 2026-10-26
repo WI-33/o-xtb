@@ -21,6 +21,8 @@
 set(dir "${CMAKE_CURRENT_SOURCE_DIR}")
 
 list(APPEND srcs
+  "${dir}/util/process.c"
+  "${dir}/util/process.f90"
   "${dir}/types/settings.f90"
   "${dir}/types/results.f90"
   "${dir}/types/coords.f90"

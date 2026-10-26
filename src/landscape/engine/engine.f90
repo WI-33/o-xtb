@@ -857,10 +857,12 @@ end subroutine engine_report
 !> none.  Nothing is printed when the user did not name a flag of the knobs,
 !> because the notice is about a knob the user asked for.
 !>
-!> The step (`hess_step`) and the SCC accuracy (`hess_acc`) are one family:
-!> the numerical provider consumes both and the `model`/`file` providers
-!> ignore both, so a single notice covers them and the gate has to accept a
-!> flag of **either** of them (`hess_step_source` **or** `hess_acc_source`).
+!> The step (`hess_step`), the SCC accuracy (`hess_acc`) and the worker count
+!> (`hess_jobs`) are one family: the numerical provider consumes all three and
+!> the `model`/`file` providers
+!> ignore all three, so a single notice covers them and the gate has to accept a
+!> flag of **any** of them (`hess_step_source` **or** `hess_acc_source` **or**
+!> `hess_jobs_source`).
 !> Looking only at `hess_step_source` left `--lts-sccacc` / `--lvib-sccacc`
 !> silent when they were the only knob given (`38-stage2b-fix2-review.md`
 !> LOW-1).
@@ -876,7 +878,8 @@ subroutine engine_report_unused_hess_step(self, unit)
    if (self%n_hess_fd > 0) then
       return
    else if (.not. allocated(self%ctrl%hess_step_source) .and. &
-         &  .not. allocated(self%ctrl%hess_acc_source)) then
+         &  .not. allocated(self%ctrl%hess_acc_source) .and. &
+         &  .not. allocated(self%ctrl%hess_jobs_source)) then
       return
    else if (allocated(self%hp)) then
       if (allocated(self%hp%name)) then

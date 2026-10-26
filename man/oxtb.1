@@ -12,7 +12,7 @@
 .SH "NAME"
 .sp
 oxtb \- performs semiempirical quantummechanical calculations
-(o\-xtb 0.3.2, implementing the xTB 6.7.1 Hamiltonian and the
+(o\-xtb 0.4.0, implementing the xTB 6.7.1 Hamiltonian and the
 \f(CRxcontrol(7)\fP input of xTB 6.0 and newer)
 .SH "SYNOPSIS"
 .sp
@@ -677,6 +677,22 @@ SCC accuracy of the displaced single points of the numerical Hessian
 \f(CR\-\-lopt\-hess\-step\fP.
 .RE
 .sp
+\fB\-\-lopt\-hess\-jobs\fP \fIN\fP
+.RS 4
+number of processes that evaluate the displaced single points of this
+task's numerical Hessian at the same time (default 1, the serial loop).
+Each worker is a fork of the running program, so it inherits the calculator,
+the geometry and the reference wavefunction; the parent combines the
+gradient columns, so the count changes the wall time only and the \f(CRhessian\fP
+file is byte for byte the same at every count. A single\-threaded run is
+required, because a worker inherits the team of the parent:
+\f(CROMP_NUM_THREADS=1\fP is the way to say that (and \f(CR\-P 1\fP if
+\f(CR\-P\fP/\f(CR\-\-parallel\fP is given). A threaded run is refused instead of nested, a
+value above the processor count is reported, and a value below 1 runs
+serially with a warning. Ignored by the \f(CRmodel\fP and
+\f(CRfile\fP Hessian sources.
+.RE
+.sp
 \fB\-\-lopt\-restart\fP \fIMODE\fP
 .RS 4
 wavefunction restart policy of the engine, \f(CRoff\fP (default), \f(CRpin\fP or \f(CRwarm\fP.
@@ -806,6 +822,22 @@ ignored for \f(CR\-\-lscan\-hessian model\fP or \f(CRfile\fP.
 SCC accuracy of the displaced single points of the numerical Hessian
 (default 0.3); consumed by the same inner minimiser and Hessian source as
 \f(CR\-\-lscan\-hess\-step\fP.
+.RE
+.sp
+\fB\-\-lscan\-hess\-jobs\fP \fIN\fP
+.RS 4
+number of processes that evaluate the displaced single points of this
+task's numerical Hessian at the same time (default 1, the serial loop).
+Each worker is a fork of the running program, so it inherits the calculator,
+the geometry and the reference wavefunction; the parent combines the
+gradient columns, so the count changes the wall time only and the \f(CRhessian\fP
+file is byte for byte the same at every count. A single\-threaded run is
+required, because a worker inherits the team of the parent:
+\f(CROMP_NUM_THREADS=1\fP is the way to say that (and \f(CR\-P 1\fP if
+\f(CR\-P\fP/\f(CR\-\-parallel\fP is given). A threaded run is refused instead of nested, a
+value above the processor count is reported, and a value below 1 runs
+serially with a warning. Ignored by the \f(CRmodel\fP and
+\f(CRfile\fP Hessian sources.
 .RE
 .sp
 \fB\-\-lscan\-hessian\fP \fISOURCE\fP
@@ -1001,6 +1033,22 @@ accuracy 0.1.
 .RS 4
 SCC accuracy of the displaced single points of the confirmation Hessian
 (default 0.3).
+.RE
+.sp
+\fB\-\-lts\-hess\-jobs\fP \fIN\fP
+.RS 4
+number of processes that evaluate the displaced single points of this
+task's numerical Hessian at the same time (default 1, the serial loop).
+Each worker is a fork of the running program, so it inherits the calculator,
+the geometry and the reference wavefunction; the parent combines the
+gradient columns, so the count changes the wall time only and the \f(CRhessian\fP
+file is byte for byte the same at every count. A single\-threaded run is
+required, because a worker inherits the team of the parent:
+\f(CROMP_NUM_THREADS=1\fP is the way to say that (and \f(CR\-P 1\fP if
+\f(CR\-P\fP/\f(CR\-\-parallel\fP is given). A threaded run is refused instead of nested, a
+value above the processor count is reported, and a value below 1 runs
+serially with a warning. Ignored by the \f(CRmodel\fP and
+\f(CRfile\fP Hessian sources.
 .RE
 .sp
 \fB\-\-lts\-product\fP \fINAME\fP
@@ -1322,6 +1370,22 @@ alias of \f(CR\-\-lirc\-hess\-step\fP.
 SCC accuracy of the displaced single points of the Hessian (default 0.3).
 .RE
 .sp
+\fB\-\-lirc\-hess\-jobs\fP \fIN\fP
+.RS 4
+number of processes that evaluate the displaced single points of this
+task's numerical Hessian at the same time (default 1, the serial loop).
+Each worker is a fork of the running program, so it inherits the calculator,
+the geometry and the reference wavefunction; the parent combines the
+gradient columns, so the count changes the wall time only and the \f(CRhessian\fP
+file is byte for byte the same at every count. A single\-threaded run is
+required, because a worker inherits the team of the parent:
+\f(CROMP_NUM_THREADS=1\fP is the way to say that (and \f(CR\-P 1\fP if
+\f(CR\-P\fP/\f(CR\-\-parallel\fP is given). A threaded run is refused instead of nested, a
+value above the processor count is reported, and a value below 1 runs
+serially with a warning. Ignored by the \f(CRmodel\fP and
+\f(CRfile\fP Hessian sources.
+.RE
+.sp
 \fB\-\-lirc\-restart\fP \fIMODE\fP
 .RS 4
 wavefunction restart policy of the engine, \f(CRoff\fP (default), \f(CRpin\fP or \f(CRwarm\fP.
@@ -1356,6 +1420,22 @@ alias of \f(CR\-\-lvib\-hess\-step\fP.
 .RS 4
 SCC accuracy of the displaced single points of the numerical Hessian
 (default 0.3).
+.RE
+.sp
+\fB\-\-lvib\-hess\-jobs\fP \fIN\fP
+.RS 4
+number of processes that evaluate the displaced single points of this
+task's numerical Hessian at the same time (default 1, the serial loop).
+Each worker is a fork of the running program, so it inherits the calculator,
+the geometry and the reference wavefunction; the parent combines the
+gradient columns, so the count changes the wall time only and the \f(CRhessian\fP
+file is byte for byte the same at every count. A single\-threaded run is
+required, because a worker inherits the team of the parent:
+\f(CROMP_NUM_THREADS=1\fP is the way to say that (and \f(CR\-P 1\fP if
+\f(CR\-P\fP/\f(CR\-\-parallel\fP is given). A threaded run is refused instead of nested, a
+value above the processor count is reported, and a value below 1 runs
+serially with a warning. Ignored by the \f(CRmodel\fP and
+\f(CRfile\fP Hessian sources.
 .RE
 .sp
 \fB\-\-lvib\-restart\fP \fIMODE\fP

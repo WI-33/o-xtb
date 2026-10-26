@@ -5867,7 +5867,7 @@ BANNER_AFFILIATION = [
 ]
 BANNER_TEXT = BANNER_DESCRIPTION + BANNER_AFFILIATION
 BANNER_VERSION = [
-    "* OxTB version 0.3.2 *",
+    "* OxTB version 0.4.0 *",
     "* xTB version 6.7.1 *",
 ]
 BANNER_LEGAL = [
@@ -5973,7 +5973,7 @@ def check_banner(exe, inp, rundir):
     for line in lines:
         if line.strip() == BANNER_OLD:
             fail("the old boxed xTB banner is still printed", output)
-    print("--version banner: %d centred lines, product 0.3.2, engine 6.7.1, "
+    print("--version banner: %d centred lines, product 0.4.0, engine 6.7.1, "
           "build date %s, commit %s"
           % (len(block), date, banner_commit or "none"))
 
@@ -6503,8 +6503,8 @@ def check_help_topic(exe, inp, rundir, main_src):
 
     with open(main_src) as handle:
         implemented = implemented_flags(handle.read())
-    if len(implemented) != 249:
-        fail("the parser implements %d spellings, expected 249"
+    if len(implemented) != 254:
+        fail("the parser implements %d spellings, expected 254"
              % len(implemented))
     # `--siman` and `--gmd` are parsed but are not registered run types; they
     # are deliberately absent from the help table (see the allowlist in

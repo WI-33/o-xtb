@@ -41,8 +41,19 @@
 !>    with the default force constants of `set%mhset`
 !>    (`src/setparam.f90:267-278`) and does not evaluate the calculator at all
 !>    (`n_eval = 0`).
-!>  * an analytic GFN2 Hessian only has to add another extension of
-!>    `landscape_hessian_provider` and a `hessian_source` name.
+!>  * `analytical` - not implemented; an analytic GFN2 Hessian only has to add
+!>    another extension of `landscape_hessian_provider` and a `hessian_source`
+!>    name.
+!>
+!> The numerical provider can evaluate its 6N displaced points in `jobs`
+!> concurrent worker processes (`--l*-hess-jobs`, default 1 = the serial loop).
+!> A worker is a `fork()` of the running program (`xtb_landscape_process`), so
+!> it inherits the calculator, the geometry and the reference wavefunction; it
+!> evaluates one Cartesian column, hands the two gradients back through a pipe
+!> and leaves through `_exit()`.  The differentiation arithmetic always runs in
+!> the parent, so the matrix does not depend on the worker count - and a worker
+!> pool inside a *threaded* run is refused rather than nested (`fork` inherits
+!> the OpenMP runtime).
 !>
 !> The `file` source reads the Hessian written by the existing xtb
 !> implementation (`hessian`, TURBOMOLE layout) back in
@@ -60,6 +71,7 @@
 !> dense and exactly symmetric.
 module xtb_landscape_hessian
    use, intrinsic :: ieee_arithmetic, only : ieee_is_finite
+!$ use omp_lib, only : omp_set_num_threads, omp_get_max_threads
    use xtb_mctc_accuracy, only : wp
    use xtb_type_environment, only : TEnvironment
    use xtb_type_molecule, only : TMolecule
@@ -74,6 +86,13 @@ module xtb_landscape_hessian
    use xtb_landscape_settings, only : landscape_log_failed, landscape_value_present, &
       & landscape_int_to_string, landscape_real_to_string
    use xtb_landscape_settings, only : landscape_lowercase
+   use, intrinsic :: iso_c_binding, only : c_int, c_long
+   use xtb_landscape_process, only : landscape_process_available, &
+      & landscape_process_pipe, landscape_process_fork, landscape_process_close, &
+      & landscape_process_read_int, landscape_process_write_int, &
+      & landscape_process_read_real, landscape_process_write_real, &
+      & landscape_process_wait, landscape_process_status_text, &
+      & landscape_process_worker_exit
    implicit none(type, external)
    private
 
@@ -167,6 +186,14 @@ module xtb_landscape_hessian
    type, extends(landscape_hessian_provider) :: landscape_numerical_hessian_provider
       !> SCC accuracy used while building the Hessian (explicit parameter)
       real(wp) :: sccacc = 0.3_wp
+      !> Number of processes that evaluate the displaced single points
+      !> concurrently (`--l*-hess-jobs`).  The 3N Cartesian columns are
+      !> independent: every point starts from the reference wavefunction, so
+      !> the result cannot depend on the order in which the columns are
+      !> evaluated and the arithmetic of each column is done by the parent
+      !> either way.  `1` keeps the serial loop, which is the default and never
+      !> touches the process module.
+      integer :: jobs = 1
       !> Number of builds this provider instance has started; the progress
       !> line uses it to say `computing` for the first build and `rebuilding`
       !> for the periodic rebuild of the optimiser, the saddle search and the
@@ -232,7 +259,7 @@ end function landscape_hessian_source_known
 !> the configured `hessian_source` a lie).  The name is matched case
 !> insensitively, like `landscape_hessian_source_known`.
 subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filename, &
-   & printlevel)
+   & printlevel, jobs)
    character(len=*), parameter :: source_name = 'new_landscape_hessian_provider'
    !> Computational environment
    type(TEnvironment), intent(inout) :: env
@@ -246,18 +273,67 @@ subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filenam
    character(len=*), intent(in), optional :: filename
    !> Print level of the provider progress lines, 0 (silent) when absent
    integer, intent(in), optional :: printlevel
+   !> Number of concurrent worker processes of the numerical Hessian, 1 when
+   !> absent
+   integer, intent(in), optional :: jobs
 
    real(wp) :: scc_accuracy
+   integer :: n_jobs, n_threads
+   character(len=200) :: buffer
 
    scc_accuracy = 0.3_wp
    if (present(sccacc)) scc_accuracy = sccacc
+   n_jobs = 1
+   if (present(jobs)) n_jobs = jobs
+
+   if (n_jobs < 1) then
+      call env%error("the number of concurrent Hessian workers must be at least 1", &
+         & source_name)
+      return
+   end if
 
    select case (landscape_lowercase(source))
    case ('numerical')
+      ! Refuse a worker count this build cannot deliver instead of ignoring it;
+      ! `1` needs no process creation and always works.
+      if (n_jobs > 1) then
+         if (landscape_process_available() == 0_c_int) then
+            call env%error("concurrent numerical Hessian workers (more than one "//&
+               & "job) are not available in this build: process creation is "//&
+               & "missing on this platform", source_name)
+            return
+         end if
+         ! A worker inherits the OpenMP runtime of this process, and libgomp has
+         ! no `fork` handler: a worker that inherited a team of more than one
+         ! thread blocks in `gomp_team_barrier_wait_end` at its first parallel
+         ! region (measured: `OMP_NUM_THREADS=8`, 4 workers, 30 atoms, hang;
+         ! `OPENBLAS_NUM_THREADS` makes no difference).  A worker that pinned
+         ! itself to one thread would not hang, but it would then also evaluate
+         ! its points with one thread while the serial run of the same job
+         ! count uses the ambient team - a difference at the level of
+         ! `AGENTS.md` section 6.1 that costs the byte identity this option is
+         ! required to keep.  The combination is therefore refused and not
+         ! silently serialised or silently re-threaded: `jobs > 1` needs a
+         ! **single-threaded run**, and `OMP_NUM_THREADS=1` is how that is said
+         ! (a `-P`/`--parallel` value is checked here as well, because it sets
+         ! the same team size).
+         n_threads = 1
+!$       n_threads = omp_get_max_threads()
+         if (n_threads > 1) then
+            write(buffer, '(a,i0,a,i0,a)') "--l*-hess-jobs ", n_jobs, &
+               & " needs a single-threaded run (OMP_NUM_THREADS=1, and -P 1 "//&
+               & "if -P/--parallel is given), but this run uses ", &
+               & n_threads, " threads; set OMP_NUM_THREADS=1 or use "//&
+               & "--l*-hess-jobs 1"
+            call env%error(trim(buffer), source_name)
+            return
+         end if
+      end if
       allocate(landscape_numerical_hessian_provider :: provider)
       select type (hp => provider)
       type is (landscape_numerical_hessian_provider)
          hp%sccacc = scc_accuracy
+         hp%jobs = n_jobs
       end select
       provider%name = 'numerical'
       provider%exact = .false.
@@ -299,6 +375,15 @@ end subroutine new_landscape_hessian_provider
 !> calculator accuracy is swapped for `self%sccacc` for the whole sequence.
 !> The geometry of `mol` and the accuracy of `calc` are restored before the
 !> routine returns, also on the error path.
+!>
+!> The 3N Cartesian columns are independent of each other and of their order:
+!> a column is one `chk%copy(wfn_ref)` plus two displaced single points, and
+!> nothing of one column reaches the next.  That is what allows the columns to
+!> be evaluated in `self%jobs` concurrent worker processes (`jobs > 1`,
+!> `numerical_hessian_concurrent`) and it is why the resulting Hessian is the
+!> same matrix for every worker count: the workers only move the *evaluation*
+!> of the columns around, the differentiation arithmetic runs in this process,
+!> one column at a time, exactly as in the serial loop.
 subroutine numerical_hessian_compute(self, env, mol, chk, calc, hess, step, odlr, final_err)
    character(len=*), parameter :: source = 'landscape_numerical_hessian_compute'
    !> Provider instance
@@ -326,7 +411,8 @@ subroutine numerical_hessian_compute(self, env, mol, chk, calc, hess, step, odlr
    type(scc_results) :: results
    real(wp) :: accuracy, egap, energy_plus, energy_minus
    real(wp) :: sigma(3, 3)
-   integer :: iat, ic, icol, n, nlog
+   integer :: icol, n
+   logical :: failed
    character(len=160) :: buffer
 
    final_err = 0.0_wp
@@ -367,58 +453,275 @@ subroutine numerical_hessian_compute(self, env, mol, chk, calc, hess, step, odlr
    ! points per Cartesian component, i.e. 6N evaluations, all of them at
    ! `displacement_printlevel` and therefore silent.  The number is the exact
    ! cost of this implementation, not a guessed constant, and the periodic
-   ! rebuild of a caller announces itself the same way (`n_builds > 0`).
+   ! rebuild of a caller announces itself the same way (`n_builds > 0`).  A
+   ! concurrent build names its worker count as well, so the setting is
+   ! visible in the transcript and not only in the wall time; the serial line
+   ! (the default) is unchanged.
    if (self%printlevel > 0) then
       if (self%n_builds == 0) then
-         write(env%unit, '(1x,a,a,a,i0,a,es9.2,a)') "computing the ", &
+         write(env%unit, '(1x,a,a,a,i0,a,es9.2,a)', advance='no') "computing the ", &
             & self%name, " Hessian: ", 6*n, &
-            & " displaced single points (6N, step ", step, " bohr)"
+            & " displaced single points (6N, step ", step, " bohr"
       else
-         write(env%unit, '(1x,a,a,a,i0,a,es9.2,a)') "rebuilding the ", &
+         write(env%unit, '(1x,a,a,a,i0,a,es9.2,a)', advance='no') "rebuilding the ", &
             & self%name, " Hessian: ", 6*n, &
-            & " displaced single points (6N, step ", step, " bohr)"
+            & " displaced single points (6N, step ", step, " bohr"
+      end if
+      if (self%jobs > 1) then
+         write(env%unit, '(a,i0,a)') ", ", self%jobs, " worker processes)"
+      else
+         write(env%unit, '(a)') ")"
       end if
    end if
    self%n_builds = self%n_builds + 1
 
-   do iat = 1, n
-      do ic = 1, 3
-         icol = 3*(iat - 1) + ic
-         xyz_plus = x0
-         xyz_plus(ic, iat) = x0(ic, iat) + step
-         xyz_minus = x0
-         xyz_minus(ic, iat) = x0(ic, iat) - step
-
-         nlog = env%nLog
-         mol%xyz = xyz_plus
-         call chk%copy(wfn_ref)
-         call calc%singlepoint(env, mol, chk, displacement_printlevel, .true., &
-            & energy_plus, g_plus, sigma, egap, results)
-         self%n_eval = self%n_eval + 1
-         if (landscape_log_failed(env, nlog)) then
-            call numerical_hessian_cleanup()
-            return
-         end if
-
-         mol%xyz = xyz_minus
-         call chk%copy(wfn_ref)
-         call calc%singlepoint(env, mol, chk, displacement_printlevel, .true., &
-            & energy_minus, g_minus, sigma, egap, results)
-         self%n_eval = self%n_eval + 1
-         if (landscape_log_failed(env, nlog)) then
-            call numerical_hessian_cleanup()
-            return
-         end if
-
+   if (self%jobs > 1) then
+      call numerical_hessian_concurrent(failed)
+   else
+      failed = .false.
+      do icol = 1, 3*n
+         call numerical_hessian_column(icol, failed)
+         if (failed) exit
          hess(:, icol) = hess(:, icol) &
             & + reshape(g_plus - g_minus, [3*n])/(2.0_wp*step)
       end do
-   end do
+   end if
 
    call numerical_hessian_cleanup()
+   if (failed) return
    hess = 0.5_wp*(hess + transpose(hess))
 
 contains
+
+   !> Evaluate one Cartesian column: the two displaced geometries of component
+   !> `icol` (`3*(iat-1)+ic`, ascending atom by atom), each started from the
+   !> reference wavefunction.  `g_plus` and `g_minus` hold the two gradients on
+   !> return, `failed` is true when a single point logged an error.
+   !>
+   !> This is the only place a displaced point is evaluated, for the serial and
+   !> the concurrent driver alike, so the two cannot drift apart; the
+   !> differentiation arithmetic stays with the callers.
+   subroutine numerical_hessian_column(icol, failed)
+      !> Cartesian column, `1 .. 3N`
+      integer, intent(in) :: icol
+      !> True when a displaced single point reported an error
+      logical, intent(out) :: failed
+
+      integer :: iat, ic, nlog
+
+      iat = (icol - 1)/3 + 1
+      ic = icol - 3*(iat - 1)
+      xyz_plus = x0
+      xyz_plus(ic, iat) = x0(ic, iat) + step
+      xyz_minus = x0
+      xyz_minus(ic, iat) = x0(ic, iat) - step
+
+      failed = .true.
+      nlog = env%nLog
+      mol%xyz = xyz_plus
+      call chk%copy(wfn_ref)
+      call calc%singlepoint(env, mol, chk, displacement_printlevel, .true., &
+         & energy_plus, g_plus, sigma, egap, results)
+      self%n_eval = self%n_eval + 1
+      if (landscape_log_failed(env, nlog)) return
+
+      mol%xyz = xyz_minus
+      call chk%copy(wfn_ref)
+      call calc%singlepoint(env, mol, chk, displacement_printlevel, .true., &
+         & energy_minus, g_minus, sigma, egap, results)
+      self%n_eval = self%n_eval + 1
+      if (landscape_log_failed(env, nlog)) return
+
+      failed = .false.
+   end subroutine numerical_hessian_column
+
+   !> Evaluate the 3N Cartesian columns in `self%jobs` concurrent worker
+   !> processes.
+   !>
+   !> Every worker is a `fork()` of this process (`xtb_landscape_process`), so
+   !> it inherits the calculator, the geometry and the reference wavefunction
+   !> and pays no start-up cost; it evaluates its column with
+   !> `numerical_hessian_column`, writes the two gradients into its own pipe
+   !> and leaves through `_exit()`.  This process never writes to a worker's
+   !> pipe and a worker never writes to a file: the only shared object is the
+   !> pipe of that worker.
+   !>
+   !> Results are collected in launch order and applied column by column, so
+   !> the collection order does not reach the matrix: each column is written
+   !> exactly once.  A worker reports the number of points it attempted
+   !> through one status word, which keeps the evaluation counter identical to
+   !> the serial path (it counts a point that logged an error, like the serial
+   !> loop).  One failed column fails the whole Hessian, exactly as in the
+   !> serial loop; the workers still running are then closed and reaped, never
+   !> detached.
+   subroutine numerical_hessian_concurrent(failed)
+      !> True when a worker reported a failure
+      logical, intent(out) :: failed
+
+      integer, allocatable :: q_fd(:), q_col(:)
+      integer(c_int), allocatable :: q_pid(:)
+      integer(c_int) :: fds(2), worker_pid, wait_status
+      integer(c_int) :: report(1), status_word(1)
+      integer(c_long) :: want, got, put, bytes
+      integer :: head, count, next_col, icol, slot, iat, ic, ndone
+      integer :: before, gone, ignored
+      logical :: worker_failed
+
+      failed = .false.
+      allocate(q_fd(self%jobs), q_col(self%jobs), q_pid(self%jobs))
+      head = 1
+      count = 0
+      next_col = 1
+      ! One iteration starts **one** worker while the queue has room and
+      ! collects one otherwise, so at most `self%jobs` workers exist.
+      do while (.not. failed .and. (count > 0 .or. next_col <= 3*n))
+         if (count < self%jobs .and. next_col <= 3*n) then
+            slot = mod(head + count - 1, self%jobs) + 1
+            if (landscape_process_pipe(fds) /= 0_c_int) then
+               call env%error("the numerical Hessian could not create a worker "//&
+                  & "pipe", source)
+               failed = .true.
+               cycle
+            end if
+            ! An inherited standard unit must not be re-flushed by a worker
+            ! that dies abnormally (a Fortran runtime trace flushes): the
+            ! parent's buffer is copied into the worker by `fork`, so it is
+            ! emptied here first and a duplicated transcript is impossible.
+            flush(env%unit)
+            worker_pid = landscape_process_fork()
+            if (worker_pid < 0_c_int) then
+               ignored = int(landscape_process_close(fds(1)))
+               ignored = int(landscape_process_close(fds(2)))
+               call env%error("the numerical Hessian could not create a worker "//&
+                  & "process; use --l*-hess-jobs 1", source)
+               failed = .true.
+               cycle
+            end if
+            if (worker_pid == 0_c_int) then
+               ! This process is the worker: it evaluates its column, reports
+               ! it through its own pipe and leaves.  The `_exit` below is
+               ! final, so nothing of this frame ever returns to the caller.
+               !
+               ! A worker runs **one** thread.  The provider factory refuses a
+               ! worker pool inside a threaded run (libgomp has no `fork`
+               ! handler, and a one-thread worker could not reproduce the
+               ! ambient team's arithmetic bit for bit); this pin states the
+               ! invariant a second time, so a worker stays single-threaded
+               ! even if the calculator changed the team size during the run.
+!$             call omp_set_num_threads(1)
+               !
+               ! The read ends of this worker's siblings are inherited copies
+               ! of the parent's; they are dropped here so that no leftover
+               ! descriptor keeps another worker's pipe alive.
+               do gone = 1, count
+                  report = int(landscape_process_close(&
+                     & q_fd(mod(head + gone - 2, self%jobs) + 1)))
+               end do
+               report = int(landscape_process_close(fds(1)))
+               before = self%n_eval
+               call numerical_hessian_column(next_col, worker_failed)
+               if (worker_failed) then
+                  ! The status word of a failed worker is the number of
+                  ! displaced points it attempted, so the parent's counter
+                  ! matches the serial path, which increments after the failing
+                  ! call as well.
+                  report = int(self%n_eval - before, c_int)
+               else
+                  report = 0_c_int
+               end if
+               bytes = int(storage_size(report(1))/8, c_long)
+               put = landscape_process_write_int(fds(2), report, bytes)
+               if (report(1) == 0_c_int) then
+                  bytes = int(storage_size(0.0_wp)/8, c_long)*int(3*n, c_long)
+                  put = landscape_process_write_real(fds(2), g_plus, bytes)
+                  put = landscape_process_write_real(fds(2), g_minus, bytes)
+               end if
+               report = int(landscape_process_close(fds(2)))
+               call landscape_process_worker_exit(0_c_int)
+            end if
+            ! This process is the parent: it keeps the read end only.  With the
+            ! write end open here the read would never see the end of file of a
+            ! worker that died before it reported.
+            ignored = int(landscape_process_close(fds(2)))
+            q_fd(slot) = fds(1)
+            q_pid(slot) = worker_pid
+            q_col(slot) = next_col
+            count = count + 1
+            next_col = next_col + 1
+            cycle
+         end if
+
+         ! Collect the oldest worker: a blocking read of its status word, then
+         ! of its two gradients.  One column is `48N + 4` bytes - two `3N`
+         ! gradients of eight bytes each plus the four byte status word - so at
+         ! N = 1366 atoms the payload exceeds the 64 KiB pipe buffer of Linux
+         ! and the worker's write blocks until the parent has drained the pipe.
+         ! That is the documented limit of this collector (N <= 1365 keeps one
+         ! column in one write), not a deadlock: every pipe has exactly one
+         ! writer, the parent closes the write end before it launches the next
+         ! worker, and it always blocks on the pipe of the **oldest** worker and
+         ! loops over short reads - so a blocked writer is never the pipe being
+         ! waited for, and every worker makes progress in launch order.
+         icol = q_col(head)
+         want = int(storage_size(status_word(1))/8, c_long)
+         got = landscape_process_read_int(q_fd(head), status_word, want)
+         if (got == want) then
+            if (status_word(1) == 0_c_int) then
+               want = int(storage_size(0.0_wp)/8, c_long)*int(3*n, c_long)
+               got = landscape_process_read_real(q_fd(head), g_plus, want)
+               if (got == want) then
+                  got = landscape_process_read_real(q_fd(head), g_minus, want)
+               end if
+               if (got /= want) status_word(1) = -1_c_int
+            end if
+         else
+            status_word(1) = -1_c_int
+         end if
+         ignored = int(landscape_process_close(q_fd(head)))
+         ignored = int(landscape_process_wait(q_pid(head), wait_status))
+         head = mod(head, self%jobs) + 1
+         count = count - 1
+
+         if (status_word(1) == 0_c_int .and. wait_status == 0_c_int) then
+            self%n_eval = self%n_eval + 2
+            ! One column is written exactly once and the differentiation of a
+            ! column is one expression, so the order in which the workers
+            ! finish cannot reach the matrix.
+            hess(:, icol) = hess(:, icol) &
+               & + reshape(g_plus - g_minus, [3*n])/(2.0_wp*step)
+         else
+            failed = .true.
+            iat = (icol - 1)/3 + 1
+            ic = icol - 3*(iat - 1)
+            if (status_word(1) > 0_c_int) then
+               ndone = int(status_word(1))
+               self%n_eval = self%n_eval + ndone
+               write(buffer, '(a,i0,a,i0,a)') "a displaced single point of the "//&
+                  & "numerical Hessian (atom ", iat, ", Cartesian component ", &
+                  & ic, ") failed in its worker process; the Hessian is not "//&
+                  & "available"
+               call env%error(trim(buffer), source)
+            else
+               write(buffer, '(a)') "the worker process of the numerical "//&
+                  & "Hessian failed (atom "//trim(landscape_int_to_string(iat))//&
+                  & ", Cartesian component "//trim(landscape_int_to_string(ic))//&
+                  & ", "//landscape_process_status_text(wait_status)//&
+                  & ", status word "//trim(landscape_int_to_string(&
+                     & int(status_word(1))))//")"
+               call env%error(trim(buffer), source)
+            end if
+         end if
+      end do
+
+      ! Close and reap every worker that is still running; none is detached.
+      do while (count > 0)
+         ignored = int(landscape_process_close(q_fd(head)))
+         ignored = int(landscape_process_wait(q_pid(head), wait_status))
+         head = mod(head, self%jobs) + 1
+         count = count - 1
+      end do
+
+   end subroutine numerical_hessian_concurrent
 
    !> Restore the geometry, the calculator accuracy and the wavefunction of
    !> the reference state.  The wavefunction is restored because the last

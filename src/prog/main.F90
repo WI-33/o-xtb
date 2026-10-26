@@ -1943,6 +1943,20 @@ contains
       !> write needs a fixed length buffer, like `parallel_note`)
       character(len=128) :: recalc_note
 
+      !> Spelling of the `--l*-hess-jobs` flag that was given and the raw value
+      !> it carried; unallocated when no such flag appeared.  The report of a
+      !> value below 1 and of one above the processor count happens in the
+      !> parser tail, where the effect of `--strict` is known - the same
+      !> lax/strict shape as the `-P` value above - so both have to survive the
+      !> flag loop.  Only one landscape task can run per invocation, so one
+      !> slot covers the five spellings.
+      character(len=:), allocatable :: landscape_hess_jobs_flag
+      integer :: landscape_hess_jobs_value
+
+      !> Report text of the `--l*-hess-jobs` diagnostics (the internal write
+      !> needs a fixed length buffer, like `parallel_note`)
+      character(len=200) :: jobs_note
+
       !> Report text of the `-P` over-subscription warning (the internal write
       !> needs a fixed length buffer; `message` is allocatable and cannot be
       !> written to before it is allocated)
@@ -2950,6 +2964,28 @@ contains
                call env%error("The --lopt-sccacc flag requires a number", source)
             end if
 
+         case ('--lopt-hess-jobs')
+            ! Number of worker processes that evaluate the displaced single
+            ! points of the numerical Hessian (default 1, the serial loop).
+            ! The 3N Cartesian columns are independent and each
+            ! point starts from the reference wavefunction, so the count
+            ! changes the wall time only, never the matrix; a value below 1 is
+            ! reported in the tail and not applied, a value above the
+            ! processor count is reported there as well
+            call select_runtyp(env, 'lopt', '--lopt-hess-jobs', selected_runtyp, selected_runtyp_flag)
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec, *, iostat=idum) idum2
+               if (idum == 0) then
+                  call set_landscape_hess_jobs(lset%engine, idum2, '--lopt-hess-jobs', &
+                     & landscape_hess_jobs_value, landscape_hess_jobs_flag)
+               else
+                  call env%error("The --lopt-hess-jobs flag requires an integer", source)
+               end if
+            else
+               call env%error("The --lopt-hess-jobs flag requires an integer", source)
+            end if
+
          case ('--lopt-restart')
             ! Wavefunction restart policy of the engine (CLI redesign section
             ! 6.3); the minimisation mirror of `--lscan-restart`
@@ -3260,6 +3296,28 @@ contains
                end if
             else
                call env%error("The --lscan-sccacc flag requires a number", source)
+            end if
+
+         case ('--lscan-hess-jobs')
+            ! Number of worker processes that evaluate the displaced single
+            ! points of the numerical Hessian (default 1, the serial loop).
+            ! The 3N Cartesian columns are independent and each
+            ! point starts from the reference wavefunction, so the count
+            ! changes the wall time only, never the matrix; a value below 1 is
+            ! reported in the tail and not applied, a value above the
+            ! processor count is reported there as well
+            call select_runtyp(env, 'lscan', '--lscan-hess-jobs', selected_runtyp, selected_runtyp_flag)
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec, *, iostat=idum) idum2
+               if (idum == 0) then
+                  call set_landscape_hess_jobs(lsset%engine, idum2, '--lscan-hess-jobs', &
+                     & landscape_hess_jobs_value, landscape_hess_jobs_flag)
+               else
+                  call env%error("The --lscan-hess-jobs flag requires an integer", source)
+               end if
+            else
+               call env%error("The --lscan-hess-jobs flag requires an integer", source)
             end if
 
          case ('--lscan-hessian')
@@ -3714,6 +3772,28 @@ contains
                end if
             else
                call env%error("The --lts-sccacc flag requires a number", source)
+            end if
+
+         case ('--lts-hess-jobs')
+            ! Number of worker processes that evaluate the displaced single
+            ! points of the numerical Hessian (default 1, the serial loop).
+            ! The 3N Cartesian columns are independent and each
+            ! point starts from the reference wavefunction, so the count
+            ! changes the wall time only, never the matrix; a value below 1 is
+            ! reported in the tail and not applied, a value above the
+            ! processor count is reported there as well
+            call select_runtyp(env, 'lts', '--lts-hess-jobs', selected_runtyp, selected_runtyp_flag)
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec, *, iostat=idum) idum2
+               if (idum == 0) then
+                  call set_landscape_hess_jobs(ltset%engine, idum2, '--lts-hess-jobs', &
+                     & landscape_hess_jobs_value, landscape_hess_jobs_flag)
+               else
+                  call env%error("The --lts-hess-jobs flag requires an integer", source)
+               end if
+            else
+               call env%error("The --lts-hess-jobs flag requires an integer", source)
             end if
 
          case ('--lts-step0')
@@ -4438,6 +4518,28 @@ contains
                call env%error("The --lirc-sccacc flag requires a number", source)
             end if
 
+         case ('--lirc-hess-jobs')
+            ! Number of worker processes that evaluate the displaced single
+            ! points of the numerical Hessian (default 1, the serial loop).
+            ! The 3N Cartesian columns are independent and each
+            ! point starts from the reference wavefunction, so the count
+            ! changes the wall time only, never the matrix; a value below 1 is
+            ! reported in the tail and not applied, a value above the
+            ! processor count is reported there as well
+            call select_runtyp(env, 'lirc', '--lirc-hess-jobs', selected_runtyp, selected_runtyp_flag)
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec, *, iostat=idum) idum2
+               if (idum == 0) then
+                  call set_landscape_hess_jobs(lircset%engine, idum2, '--lirc-hess-jobs', &
+                     & landscape_hess_jobs_value, landscape_hess_jobs_flag)
+               else
+                  call env%error("The --lirc-hess-jobs flag requires an integer", source)
+               end if
+            else
+               call env%error("The --lirc-hess-jobs flag requires an integer", source)
+            end if
+
          case ('--lirc-restart')
             ! Wavefunction restart policy of the engine
             call select_runtyp(env, 'lirc', '--lirc-restart', selected_runtyp, selected_runtyp_flag)
@@ -4538,6 +4640,28 @@ contains
                end if
             else
                call env%error("The --lvib-sccacc flag requires a number", source)
+            end if
+
+         case ('--lvib-hess-jobs')
+            ! Number of worker processes that evaluate the displaced single
+            ! points of the numerical Hessian (default 1, the serial loop).
+            ! The 3N Cartesian columns are independent and each
+            ! point starts from the reference wavefunction, so the count
+            ! changes the wall time only, never the matrix; a value below 1 is
+            ! reported in the tail and not applied, a value above the
+            ! processor count is reported there as well
+            call select_runtyp(env, 'lvib', '--lvib-hess-jobs', selected_runtyp, selected_runtyp_flag)
+            call args%nextArg(sec)
+            if (allocated(sec)) then
+               read(sec, *, iostat=idum) idum2
+               if (idum == 0) then
+                  call set_landscape_hess_jobs(lvset%engine, idum2, '--lvib-hess-jobs', &
+                     & landscape_hess_jobs_value, landscape_hess_jobs_flag)
+               else
+                  call env%error("The --lvib-hess-jobs flag requires an integer", source)
+               end if
+            else
+               call env%error("The --lvib-hess-jobs flag requires an integer", source)
             end if
 
          case ('--lvib-restart')
@@ -4743,6 +4867,36 @@ contains
             & landscape_parallel_team, " exceeds the ", nproc, &
             & " processors of this machine"
          call env%warning(trim(parallel_note), source)
+      end if
+
+      ! The value of `--l*-hess-jobs`.  A value below 1 would evaluate no
+      ! Cartesian column of the numerical Hessian at all, so it is not applied
+      ! (the run stays serial) and it is reported here, where the effect of
+      ! `--strict` is known - the same lax/strict shape as the `-P` value
+      ! above.  A request above the processor count also oversubscribes the
+      ! machine by that factor; like `-P` it is applied as given and only
+      ! reported, because clamping it silently would be the defect class being
+      ! fixed.
+      if (allocated(landscape_hess_jobs_flag)) then
+         if (landscape_hess_jobs_value < 1) then
+            write(jobs_note, '(a,a,i0,a)') trim(landscape_hess_jobs_flag), &
+               & " needs a number of worker processes of at least 1, not ", &
+               & landscape_hess_jobs_value, &
+               & "; the value is ignored and the numerical Hessian runs serially"
+            if (strict) then
+               call env%error(trim(jobs_note), source)
+            else
+               call env%warning(trim(jobs_note), source)
+            end if
+         else
+!$          nproc = omp_get_num_procs()
+            if (nproc > 0 .and. landscape_hess_jobs_value > nproc) then
+               write(jobs_note, '(a,1x,i0,a,i0,a)') trim(landscape_hess_jobs_flag), &
+                  & landscape_hess_jobs_value, " exceeds the ", nproc, &
+                  & " processors of this machine"
+               call env%warning(trim(jobs_note), source)
+            end if
+         end if
       end if
 
       ! `--lopt-recalc N` rebuilds the exact Hessian every N RFO steps, `0`
@@ -6057,6 +6211,39 @@ subroutine set_landscape_hess_step(env, ctrl, step, owner, source)
    ctrl%hess_step_source = owner
 
 end subroutine set_landscape_hess_step
+
+!> Set the number of worker processes of the numerical Hessian.
+!>
+!> Shared setter of the five spellings `--lopt-hess-jobs`, `--lscan-hess-jobs`,
+!> `--lts-hess-jobs`, `--lirc-hess-jobs` and `--lvib-hess-jobs`, which all name
+!> the same knob of their own task's engine control.  A value below 1 is not a
+!> second spelling of "serial": the provider would evaluate no Cartesian
+!> column at all, so it is **not** applied and the diagnostic is left to the
+!> parser tail (`xtbMain`), where the effect of `--strict` is known - the same
+!> lax/strict shape as the `-P` value and the negative `--lopt-recalc` value.
+!>
+!> `value` and `flag` carry the raw argument out of the flag loop for that
+!> report, exactly like `landscape_parallel_value` carries the `-P` value.
+subroutine set_landscape_hess_jobs(ctrl, jobs, owner, value, flag)
+   !> Engine control of the task that owns the knob
+   type(landscape_engine_control), intent(inout) :: ctrl
+   !> Requested number of worker processes
+   integer, intent(in) :: jobs
+   !> Spelling of the flag that carried the value
+   character(len=*), intent(in) :: owner
+   !> Raw value, reported in the parser tail when it is below 1
+   integer, intent(out) :: value
+   !> Spelling of the flag, reported in the parser tail alongside `value`
+   character(len=:), allocatable, intent(out) :: flag
+
+   value = jobs
+   flag = owner
+   if (jobs >= 1) then
+      ctrl%hess_jobs = jobs
+      ctrl%hess_jobs_source = owner
+   end if
+
+end subroutine set_landscape_hess_jobs
 
 !> Read up to four 1-based atom indices from a comma or blank separated list.
 !>

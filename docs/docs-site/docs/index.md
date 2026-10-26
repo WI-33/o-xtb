@@ -14,13 +14,13 @@ deliberately **not** renamed.
 
 | Number | Meaning |
 |---|---|
-| **o-xtb 0.3.2** | the product version of this fork |
+| **o-xtb 0.4.0** | the product version of this fork |
 | **xTB 6.7.1** | the engine version this fork tracks |
 
 Both are printed by the startup banner:
 
 ```text
- * OxTB version 0.3.2 *
+ * OxTB version 0.4.0 *
  * xTB version 6.7.1 *
 ```
 

@@ -82,8 +82,8 @@ from gen_cli_reference import parse_records, spelling_tokens  # noqa: E402
 #: well: the counts fail loudly instead of shipping a silently stale script.
 #: `EXPECTED_SPELLINGS` is one below the gate's documented set (247) by design:
 #: the numeric level aliases `-1`/`-2`/`-3` are argument values, not flags.
-EXPECTED_RECORDS = 223
-EXPECTED_SPELLINGS = 244
+EXPECTED_RECORDS = 228
+EXPECTED_SPELLINGS = 249
 
 #: Placeholders that mean "a path or a program".
 FILE_PLACEHOLDERS = ("FILE", "[FILE]", "EXECUTABLE", "[EXECUTABLE]")

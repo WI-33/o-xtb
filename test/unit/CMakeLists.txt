@@ -1465,6 +1465,158 @@ add_test("xtb/landscape-vib-imag-cutoff-invalid"
   -DRUNDIR=${LANDSCAPE-ERROR-DIR}
   -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_error.cmake")
 
+# Landscape suite: the concurrent finite difference Hessian (`--l*-hess-jobs`).
+#
+# The 3N Cartesian columns of the numerical Hessian are evaluated in `jobs`
+# worker processes; the differentiation arithmetic stays in the parent.  The
+# matrix therefore has to be independent of the worker count, and this test
+# pins that with the smallest possible case (water, 18 displaced points):
+#
+#  (1) `--lvib` with `--lvib-hess-jobs 2`, `3` and `5000000` writes a **byte
+#      identical** `hessian` and `vibspectrum` to the default serial run, and
+#      every run reports 6N+1 = 19 energy evaluations - a lost, duplicated or
+#      reordered point changes the matrix or the counter.  Three counts and not
+#      one, because the worker ring of `types/hessian.f90` has three shapes:
+#      `2` collects a slot in launch order, `3` wraps the `mod`-based queue
+#      (`jobs >= 3`), and `5000000` is above 3N = 9, so the queue never fills
+#      and no slot is ever re-used (report 227, finding 4).
+#  (2) The concurrent run names its worker count in the transcription, the
+#      serial one does not, so the setting cannot be silently dropped.
+#  (3) A value below 1 is not applied (warning, the run is serial and still
+#      reports 19 evaluations) and is fatal under `--strict`.
+#  (4) A worker pool inside a thread-parallel run is refused: a `fork` inherits
+#      the OpenMP runtime, so nesting the pool in a team is not attempted.
+#      This is the case that hung at `OMP_NUM_THREADS=8` before the refusal.
+#  (5) A value above the processor count is reported with the flag and the
+#      value separated; the `5000000` run above is that branch (report 227,
+#      finding 3 - the note used to read `--lvib-hess-jobs5000000`).
+file(WRITE "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_hess_jobs.cmake" [=[
+file(REMOVE_RECURSE "${RUNDIR}")
+file(MAKE_DIRECTORY "${RUNDIR}/serial" "${RUNDIR}/concurrent" "${RUNDIR}/ring3"
+     "${RUNDIR}/clamp" "${RUNDIR}/zero" "${RUNDIR}/strict" "${RUNDIR}/threaded")
+execute_process(
+  COMMAND "${EXE}" "${INPUT}" --gfn 2 --lvib --norestart
+  WORKING_DIRECTORY "${RUNDIR}/serial"
+  RESULT_VARIABLE serial_status
+  OUTPUT_VARIABLE serial
+  ERROR_VARIABLE serial
+)
+if(NOT serial_status EQUAL 0)
+  message(FATAL_ERROR "the serial --lvib run terminated with status ${serial_status}\n${serial}")
+endif()
+foreach(pair "concurrent 2" "ring3 3" "clamp 5000000")
+  string(REPLACE " " ";" pair_list "${pair}")
+  list(GET pair_list 0 run_name)
+  list(GET pair_list 1 jobs)
+  execute_process(
+    COMMAND "${EXE}" "${INPUT}" --gfn 2 --lvib --norestart --lvib-hess-jobs ${jobs}
+    WORKING_DIRECTORY "${RUNDIR}/${run_name}"
+    RESULT_VARIABLE ${run_name}_status
+    OUTPUT_VARIABLE ${run_name}
+    ERROR_VARIABLE ${run_name}
+  )
+  if(NOT ${run_name}_status EQUAL 0)
+    message(FATAL_ERROR
+      "the --lvib-hess-jobs ${jobs} run terminated with status ${${run_name}_status}\n${${run_name}}")
+  endif()
+endforeach()
+
+# (1) byte identity of the matrix and of the frequencies, plus the counter
+foreach(run_name "concurrent" "ring3" "clamp")
+  foreach(name "hessian" "vibspectrum")
+    file(SHA256 "${RUNDIR}/serial/${name}" serial_hash)
+    file(SHA256 "${RUNDIR}/${run_name}/${name}" ${run_name}_hash)
+    if(NOT serial_hash STREQUAL ${run_name}_hash)
+      message(FATAL_ERROR
+        "the ${name} file of ${run_name} depends on the worker count (${serial_hash} vs ${${run_name}_hash})")
+    endif()
+  endforeach()
+endforeach()
+foreach(run_name "serial" "concurrent" "ring3" "clamp")
+  set(text "${${run_name}}")
+  if(NOT text MATCHES "landscape engine: energy evaluations +([0-9]+)")
+    message(FATAL_ERROR "the ${run_name} run reports no evaluation counter\n${text}")
+  endif()
+  if(NOT CMAKE_MATCH_1 EQUAL 19)
+    message(FATAL_ERROR
+      "the ${run_name} run used ${CMAKE_MATCH_1} evaluations, expected 6N+1 = 19")
+  endif()
+endforeach()
+
+# (2) the worker count is visible in the transcript - and only when it applies
+if(serial MATCHES "worker processes")
+  message(FATAL_ERROR "the serial run announced a worker count\n${serial}")
+endif()
+if(NOT concurrent MATCHES "18 displaced single points .*2 worker processes")
+  message(FATAL_ERROR "the concurrent run did not announce its worker count\n${concurrent}")
+endif()
+
+# (3) a value below 1 is reported and not applied
+execute_process(
+  COMMAND "${EXE}" "${INPUT}" --gfn 2 --lvib --norestart --lvib-hess-jobs 0
+  WORKING_DIRECTORY "${RUNDIR}/zero"
+  RESULT_VARIABLE zero_status
+  OUTPUT_VARIABLE zero
+  ERROR_VARIABLE zero
+)
+if(NOT zero_status EQUAL 0)
+  message(FATAL_ERROR "--lvib-hess-jobs 0 was fatal in a lax run (status ${zero_status})\n${zero}")
+endif()
+if(NOT zero MATCHES "--lvib-hess-jobs needs a number of worker processes of at least 1")
+  message(FATAL_ERROR "the unusable worker count was not reported\n${zero}")
+endif()
+if(NOT zero MATCHES "landscape engine: energy evaluations +19")
+  message(FATAL_ERROR "the run with --lvib-hess-jobs 0 did not stay serial\n${zero}")
+endif()
+execute_process(
+  COMMAND "${EXE}" "${INPUT}" --gfn 2 --lvib --norestart --lvib-hess-jobs 0 --strict
+  WORKING_DIRECTORY "${RUNDIR}/strict"
+  RESULT_VARIABLE strict_status
+  OUTPUT_VARIABLE strict
+  ERROR_VARIABLE strict
+)
+if(strict_status EQUAL 0)
+  message(FATAL_ERROR "--strict did not make the unusable worker count fatal\n${strict}")
+endif()
+if(NOT strict MATCHES "needs a number of worker processes of at least 1")
+  message(FATAL_ERROR "the strict run did not name the flag\n${strict}")
+endif()
+
+# (4) a worker pool inside a threaded run is refused, not nested
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" -E env "OMP_NUM_THREADS=2"
+          "${EXE}" "${INPUT}" --gfn 2 --lvib --norestart --lvib-hess-jobs 2
+  WORKING_DIRECTORY "${RUNDIR}/threaded"
+  RESULT_VARIABLE threaded_status
+  OUTPUT_VARIABLE threaded
+  ERROR_VARIABLE threaded
+)
+if(threaded_status EQUAL 0)
+  message(FATAL_ERROR
+    "a worker pool inside a two-thread run was accepted\n${threaded}")
+endif()
+if(NOT threaded MATCHES "needs a single-threaded run")
+  message(FATAL_ERROR "the threaded refusal did not explain itself\n${threaded}")
+endif()
+if(NOT threaded MATCHES "OMP_NUM_THREADS=1")
+  message(FATAL_ERROR
+    "the threaded refusal does not say how to make the run single-threaded\n${threaded}")
+endif()
+
+# (5) the over-subscription note separates the flag from the value; the clamp
+# run above is its fixture (5000000 workers on any machine).
+if(NOT clamp MATCHES "--lvib-hess-jobs 5000000 exceeds the +[0-9]+ processors")
+  message(FATAL_ERROR
+    "the over-subscription note does not name flag and value separately\n${clamp}")
+endif()
+]=])
+add_test("xtb/landscape-hess-jobs"
+  ${CMAKE_COMMAND}
+  -DEXE=${XTB-EXE}
+  -DINPUT=${LANDSCAPE-H2O}
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-hess-jobs
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_hess_jobs.cmake")
+
 # Landscape suite: `--lscan-max-steps` reaches the inner relaxation, and a scan
 # in which no point converges reports a missing minimum instead of a number
 # (M2 leftover M-1/M-2).
@@ -3628,6 +3780,7 @@ set_tests_properties(
   "xtb/landscape-opt-hessian"
   "xtb/landscape-scan-cli"
   "xtb/landscape-vib-cli"
+  "xtb/landscape-hess-jobs"
   "xtb/landscape-vib-etemp"
   "xtb/landscape-vib-namespace"
   "xtb/landscape-scan-max-steps"
@@ -3787,7 +3940,7 @@ if(NOT EXISTS "${RUNDIR}/landscape_sp.json")
   message(FATAL_ERROR "--ljson with the default run type wrote no landscape_sp.json\n${output}")
 endif()
 file(READ "${RUNDIR}/landscape_sp.json" document)
-foreach(needle "\"format\": 2" "\"task\": \"sp\"" "\"n_atoms\": 3" "\"energy\": " "\"geometry\": {" "\"unit\": \"bohr\"" "\"provenance\": {" "\"oxtb_version\": \"0.3.2\"" "\"engine_version\": \"6.7.1\"" "\"input_file\": ")
+foreach(needle "\"format\": 2" "\"task\": \"sp\"" "\"n_atoms\": 3" "\"energy\": " "\"geometry\": {" "\"unit\": \"bohr\"" "\"provenance\": {" "\"oxtb_version\": \"0.4.0\"" "\"engine_version\": \"6.7.1\"" "\"input_file\": ")
   string(FIND "${document}" "${needle}" found)
   if(found EQUAL -1)
     message(FATAL_ERROR "landscape_sp.json lacks ${needle}\n${document}")
@@ -3901,15 +4054,19 @@ set_tests_properties(
   ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1"
 )
 
-# The two failure statuses of the `ts` document, side by side (report 224,
-# finding 1): a search that ran out of steps is `incomplete` (1) with its own
+# The three failure statuses of the `ts` document, side by side (reports 224
+# and 227): a search that ran out of steps is `incomplete` (1) with its own
 # message and `n_imag` -1, a search that converged onto a *minimum* is `error`
-# (-1) with the confirmation's verdict and `n_imag` 0.  The second branch is the
-# H2 verdict: `confirm_saddle` clears `result%converged` when it rejects the
-# point, so a status predicate written on `converged` never sees it and
-# downgrades the document to 1.  The mode writes the linear HNC fixture it needs
-# (the exhausted branch uses the ammonia input); the CLI half of the same pin is
-# in `xtb/landscape-ts-minimum`.
+# (-1) with the confirmation's verdict and `n_imag` 0, and a search that
+# converged but whose confirmation could not be built is `error` with
+# `n_imag` -1 and an "unconfirmed" message.  The two `error` branches are
+# mirror images: `confirm_saddle` clears `result%converged` when it rejects the
+# point, so a predicate written on `converged` misses the minimum, while a
+# predicate written on `n_imag >= 0` misses the unbuilt confirmation - both
+# used to report a document that contradicted the log and the exit status.  The
+# mode writes the linear HNC and the bent HCN fixtures it needs (the exhausted
+# branch uses the ammonia input); the CLI half of the same pin is in
+# `xtb/landscape-ts-minimum`.
 add_test("xtb/landscape-ts-status"
   ${CMAKE_COMMAND}
   -DPYTHON=${Python3_EXECUTABLE}
@@ -4899,7 +5056,7 @@ add_test("xtb/landscape-dock-gfn-value"
 
 # The startup banner (`src/header.f90`, `docs/_simplify-recon/116-oxtb-banner.md`)
 # replaced the boxed `x T B` banner with the OxTB wordmark, the product version
-# 0.3.2, the engine version and the legal notice of GPL-3.0 section 5(d).
+# 0.4.0, the engine version and the legal notice of GPL-3.0 section 5(d).
 # Nothing covered the banner text before: `xtb/Argparser_print_version` ran
 # `--version` without looking at its output, so reverting `src/header.f90` left
 # every test green.  The check pins the centred block line by line (wordmark

@@ -139,7 +139,7 @@ subroutine help(iunit, topic, status, values_only)
    end type help_option
 
    !> Number of categories and of options of the page
-   integer, parameter :: n_cat = 17, n_opt = 223
+   integer, parameter :: n_cat = 17, n_opt = 228
    !> Legal values of every option with a constrained value set.  One named
    !> array per set, referenced by the `values=` argument of `add`, so a set
    !> lives in exactly one place: `--help <topic>` prints it as a uniform
@@ -469,6 +469,21 @@ subroutine help(iunit, topic, status, values_only)
       "    SCC accuracy of the displaced single points of the numerical Hessian", &
       "    (default 0.3), consumed by the same engine and Hessian source as", &
       "    --lopt-hess-step"])
+   call add("--lopt-hess-jobs N", "minimisation", &
+      "FD Hessian worker processes (default 1)", &
+      [character(len=160) :: &
+      "    number of processes that evaluate the displaced single points of this", &
+      "    task's numerical Hessian at the same time (default 1, the serial loop).", &
+      "    Each worker is a fork of the running program, so it inherits the", &
+      "    calculator, the geometry and the reference wavefunction; the parent", &
+      "    combines the gradient columns, so the worker count changes the wall time", &
+      "    only and the hessian file is byte for byte the same at every count.", &
+      "    A single-threaded run is required, because a worker inherits the team", &
+      "    of the parent: OMP_NUM_THREADS=1 is the way to say that (and -P 1 if", &
+      "    -P/--parallel is given).  A threaded run is refused instead of nested,", &
+      "    a value above the processor count is reported, and a value below 1", &
+      "    runs serially with a warning.", &
+      "    Ignored by the model and file Hessian sources."])
    call add("--lopt-restart MODE", "minimisation", &
       "wavefunction restart policy: off, pin or warm", &
       [character(len=160) :: "    wavefunction restart policy of the engine, off (default), pin or warm"], &
@@ -558,6 +573,21 @@ subroutine help(iunit, topic, status, values_only)
       "    SCC accuracy of the displaced single points of the numerical Hessian", &
       "    of the scan points (default 0.3), consumed by the same inner", &
       "    minimiser and Hessian source as --lscan-hess-step"])
+   call add("--lscan-hess-jobs N", "scan", &
+      "FD Hessian worker processes (default 1)", &
+      [character(len=160) :: &
+      "    number of processes that evaluate the displaced single points of this", &
+      "    task's numerical Hessian at the same time (default 1, the serial loop).", &
+      "    Each worker is a fork of the running program, so it inherits the", &
+      "    calculator, the geometry and the reference wavefunction; the parent", &
+      "    combines the gradient columns, so the worker count changes the wall time", &
+      "    only and the hessian file is byte for byte the same at every count.", &
+      "    A single-threaded run is required, because a worker inherits the team", &
+      "    of the parent: OMP_NUM_THREADS=1 is the way to say that (and -P 1 if", &
+      "    -P/--parallel is given).  A threaded run is refused instead of nested,", &
+      "    a value above the processor count is reported, and a value below 1", &
+      "    runs serially with a warning.", &
+      "    Ignored by the model and file Hessian sources."])
    call add("--lscan-hessian SOURCE", "scan", &
       "Hessian backend of the scan points", &
       [character(len=160) :: "    Hessian backend of the scan points, one of numerical (default), model or file"], &
@@ -686,6 +716,21 @@ subroutine help(iunit, topic, status, values_only)
    call add("--lts-sccacc VALUE", "saddle", &
       "SCC accuracy of the confirmation Hessian", &
       [character(len=160) :: "    SCC accuracy of the displaced single points of the confirmation Hessian (default 0.3)"])
+   call add("--lts-hess-jobs N", "saddle", &
+      "FD Hessian worker processes (default 1)", &
+      [character(len=160) :: &
+      "    number of processes that evaluate the displaced single points of this", &
+      "    task's numerical Hessian at the same time (default 1, the serial loop).", &
+      "    Each worker is a fork of the running program, so it inherits the", &
+      "    calculator, the geometry and the reference wavefunction; the parent", &
+      "    combines the gradient columns, so the worker count changes the wall time", &
+      "    only and the hessian file is byte for byte the same at every count.", &
+      "    A single-threaded run is required, because a worker inherits the team", &
+      "    of the parent: OMP_NUM_THREADS=1 is the way to say that (and -P 1 if", &
+      "    -P/--parallel is given).  A threaded run is refused instead of nested,", &
+      "    a value above the processor count is reported, and a value below 1", &
+      "    runs serially with a warning.", &
+      "    Ignored by the model and file Hessian sources."])
    call add("--lts-product NAME", "band", &
       "product endpoint of a chain-of-states search", &
       [character(len=160) :: &
@@ -926,6 +971,21 @@ subroutine help(iunit, topic, status, values_only)
    call add("--lirc-sccacc VALUE", "irc", &
       "SCC accuracy of the Hessian points", &
       [character(len=160) :: "    SCC accuracy of the displaced single points of the Hessian (default 0.3)"])
+   call add("--lirc-hess-jobs N", "irc", &
+      "FD Hessian worker processes (default 1)", &
+      [character(len=160) :: &
+      "    number of processes that evaluate the displaced single points of this", &
+      "    task's numerical Hessian at the same time (default 1, the serial loop).", &
+      "    Each worker is a fork of the running program, so it inherits the", &
+      "    calculator, the geometry and the reference wavefunction; the parent", &
+      "    combines the gradient columns, so the worker count changes the wall time", &
+      "    only and the hessian file is byte for byte the same at every count.", &
+      "    A single-threaded run is required, because a worker inherits the team", &
+      "    of the parent: OMP_NUM_THREADS=1 is the way to say that (and -P 1 if", &
+      "    -P/--parallel is given).  A threaded run is refused instead of nested,", &
+      "    a value above the processor count is reported, and a value below 1", &
+      "    runs serially with a warning.", &
+      "    Ignored by the model and file Hessian sources."])
    call add("--lirc-restart MODE", "irc", &
       "wavefunction restart policy: off, pin or warm", &
       [character(len=160) :: "    wavefunction restart policy of the engine, off (default), pin or warm"], &
@@ -952,6 +1012,21 @@ subroutine help(iunit, topic, status, values_only)
    call add("--lvib-sccacc VALUE", "frequencies", &
       "SCC accuracy of the FD Hessian points", &
       [character(len=160) :: "    SCC accuracy of the displaced single points of the numerical Hessian (default 0.3)"])
+   call add("--lvib-hess-jobs N", "frequencies", &
+      "FD Hessian worker processes (default 1)", &
+      [character(len=160) :: &
+      "    number of processes that evaluate the displaced single points of this", &
+      "    task's numerical Hessian at the same time (default 1, the serial loop).", &
+      "    Each worker is a fork of the running program, so it inherits the", &
+      "    calculator, the geometry and the reference wavefunction; the parent", &
+      "    combines the gradient columns, so the worker count changes the wall time", &
+      "    only and the hessian file is byte for byte the same at every count.", &
+      "    A single-threaded run is required, because a worker inherits the team", &
+      "    of the parent: OMP_NUM_THREADS=1 is the way to say that (and -P 1 if", &
+      "    -P/--parallel is given).  A threaded run is refused instead of nested,", &
+      "    a value above the processor count is reported, and a value below 1", &
+      "    runs serially with a warning.", &
+      "    Ignored by the model and file Hessian sources."])
    call add("--lvib-restart MODE", "frequencies", &
       "wavefunction restart policy: off, pin or warm", &
       [character(len=160) :: &

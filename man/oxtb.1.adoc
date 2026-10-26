@@ -8,7 +8,7 @@ NAME
 ----
 
 oxtb - performs semiempirical quantummechanical calculations
-      (o-xtb 0.3.2, implementing the xTB 6.7.1 Hamiltonian and the
+      (o-xtb 0.4.0, implementing the xTB 6.7.1 Hamiltonian and the
       `xcontrol(7)` input of xTB 6.0 and newer)
 
 SYNOPSIS
@@ -511,6 +511,20 @@ MINIMISATION OPTIONS (--lopt)
     (default 0.3). Consumed by the same engine and Hessian source as
     `--lopt-hess-step`.
 
+*--lopt-hess-jobs* 'N'::
+    number of processes that evaluate the displaced single points of this
+    task's numerical Hessian at the same time (default 1, the serial loop).
+    Each worker is a fork of the running program, so it inherits the calculator,
+    the geometry and the reference wavefunction; the parent combines the
+    gradient columns, so the count changes the wall time only and the `hessian`
+    file is byte for byte the same at every count. A single-threaded run is
+    required, because a worker inherits the team of the parent:
+    `OMP_NUM_THREADS=1` is the way to say that (and `-P 1` if
+    `-P`/`--parallel` is given). A threaded run is refused instead of nested, a
+    value above the processor count is reported, and a value below 1 runs
+    serially with a warning. Ignored by the `model` and
+    `file` Hessian sources.
+
 *--lopt-restart* 'MODE'::
     wavefunction restart policy of the engine, `off` (default), `pin` or `warm`.
 
@@ -605,6 +619,20 @@ SCAN OPTIONS (--lscan)
     SCC accuracy of the displaced single points of the numerical Hessian
     (default 0.3); consumed by the same inner minimiser and Hessian source as
     `--lscan-hess-step`.
+
+*--lscan-hess-jobs* 'N'::
+    number of processes that evaluate the displaced single points of this
+    task's numerical Hessian at the same time (default 1, the serial loop).
+    Each worker is a fork of the running program, so it inherits the calculator,
+    the geometry and the reference wavefunction; the parent combines the
+    gradient columns, so the count changes the wall time only and the `hessian`
+    file is byte for byte the same at every count. A single-threaded run is
+    required, because a worker inherits the team of the parent:
+    `OMP_NUM_THREADS=1` is the way to say that (and `-P 1` if
+    `-P`/`--parallel` is given). A threaded run is refused instead of nested, a
+    value above the processor count is reported, and a value below 1 runs
+    serially with a warning. Ignored by the `model` and
+    `file` Hessian sources.
 
 *--lscan-hessian* 'SOURCE'::
     Hessian backend of the scan points, one of `numerical` (default), `model` or
@@ -736,6 +764,20 @@ TRANSITION STATE OPTIONS (--lts)
 *--lts-sccacc* 'VALUE'::
     SCC accuracy of the displaced single points of the confirmation Hessian
     (default 0.3).
+
+*--lts-hess-jobs* 'N'::
+    number of processes that evaluate the displaced single points of this
+    task's numerical Hessian at the same time (default 1, the serial loop).
+    Each worker is a fork of the running program, so it inherits the calculator,
+    the geometry and the reference wavefunction; the parent combines the
+    gradient columns, so the count changes the wall time only and the `hessian`
+    file is byte for byte the same at every count. A single-threaded run is
+    required, because a worker inherits the team of the parent:
+    `OMP_NUM_THREADS=1` is the way to say that (and `-P 1` if
+    `-P`/`--parallel` is given). A threaded run is refused instead of nested, a
+    value above the processor count is reported, and a value below 1 runs
+    serially with a warning. Ignored by the `model` and
+    `file` Hessian sources.
 
 *--lts-product* 'NAME'::
     product endpoint of a chain-of-states search (`neb`, `cineb`, `autoneb`,
@@ -954,6 +996,20 @@ INTRINSIC REACTION COORDINATE OPTIONS (--lirc)
 *--lirc-sccacc* 'VALUE'::
     SCC accuracy of the displaced single points of the Hessian (default 0.3).
 
+*--lirc-hess-jobs* 'N'::
+    number of processes that evaluate the displaced single points of this
+    task's numerical Hessian at the same time (default 1, the serial loop).
+    Each worker is a fork of the running program, so it inherits the calculator,
+    the geometry and the reference wavefunction; the parent combines the
+    gradient columns, so the count changes the wall time only and the `hessian`
+    file is byte for byte the same at every count. A single-threaded run is
+    required, because a worker inherits the team of the parent:
+    `OMP_NUM_THREADS=1` is the way to say that (and `-P 1` if
+    `-P`/`--parallel` is given). A threaded run is refused instead of nested, a
+    value above the processor count is reported, and a value below 1 runs
+    serially with a warning. Ignored by the `model` and
+    `file` Hessian sources.
+
 *--lirc-restart* 'MODE'::
     wavefunction restart policy of the engine, `off` (default), `pin` or `warm`.
 
@@ -979,6 +1035,20 @@ FREQUENCY AND THERMOCHEMISTRY OPTIONS (--lvib)
 *--lvib-sccacc* 'VALUE'::
     SCC accuracy of the displaced single points of the numerical Hessian
     (default 0.3).
+
+*--lvib-hess-jobs* 'N'::
+    number of processes that evaluate the displaced single points of this
+    task's numerical Hessian at the same time (default 1, the serial loop).
+    Each worker is a fork of the running program, so it inherits the calculator,
+    the geometry and the reference wavefunction; the parent combines the
+    gradient columns, so the count changes the wall time only and the `hessian`
+    file is byte for byte the same at every count. A single-threaded run is
+    required, because a worker inherits the team of the parent:
+    `OMP_NUM_THREADS=1` is the way to say that (and `-P 1` if
+    `-P`/`--parallel` is given). A threaded run is refused instead of nested, a
+    value above the processor count is reported, and a value below 1 runs
+    serially with a warning. Ignored by the `model` and
+    `file` Hessian sources.
 
 *--lvib-restart* 'MODE'::
     wavefunction restart policy of the engine, `off` (default), `pin` or `warm`.

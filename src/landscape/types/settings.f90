@@ -378,6 +378,19 @@ module xtb_landscape_settings
       !> named **either** of them and the run consumed neither.  There is no
       !> alias conflict check: every task spells its accuracy flag once.
       character(len=:), allocatable :: hess_acc_source
+      !> Number of processes that evaluate the 3N Cartesian columns of the
+      !> numerical Hessian concurrently (`--l*-hess-jobs`).  `1` is the default
+      !> and keeps the serial loop, which never touches process creation; the
+      !> result is independent of the count, because every displaced point
+      !> starts from the same reference wavefunction and the differentiation
+      !> arithmetic stays in the parent process (`type/hessian.f90`).
+      integer :: hess_jobs = 1
+      !> Flag that set `hess_jobs`, empty until one was named on the command
+      !> line; the third member of the finite difference knob family next to
+      !> `hess_step_source` and `hess_acc_source`, and the state of the
+      !> "(not used: ...)" notice of
+      !> `landscape_engine%report_unused_hess_step`.
+      character(len=:), allocatable :: hess_jobs_source
       !> Finite difference step of the Hessian-vector product (bohr)
       real(wp) :: hvp_step = 5.0e-3_wp
       !> Use the ODLR approximation of the numerical Hessian
