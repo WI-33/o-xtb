@@ -73,6 +73,7 @@ module xtb_landscape_tasks_irc
    use xtb_landscape_settings, only : landscape_irc_settings, landscape_vib_settings, &
       & landscape_opt_settings, landscape_engine_control, landscape_irc_method_name, &
       & landscape_restart_name, landscape_hessian_update_name, landscape_lowercase, &
+      & landscape_real_to_string, &
       & p_landscape_irc_gs, p_landscape_irc_lqa, p_landscape_irc_hpc, &
       & p_landscape_irc_eulerpc, landscape_log_failed, landscape_int_to_string
    use xtb_landscape_results, only : landscape_result, landscape_irc_result, &
@@ -206,6 +207,12 @@ subroutine landscape_irc(env, mol, chk, calc, settings, result)
       ! (`xtb_prog_main::landscape_engine_banner`): it names the integrator of
       ! every reaction path run and says `(default)`/`(explicit)`.
    end if
+
+   ! H2 of report 220 section 4: an option of this run type that only a subset
+   ! of the integrators reads must not disappear without a word when the user
+   ! selected an integrator outside that subset (see
+   ! `irc_report_ignored_options`).
+   call irc_report_ignored_options(env, settings)
 
    ! `$fix` is not implemented for the reaction path: the path advance happens
    ! in the mass weighted metric (`bohr*amu^1/2`), and the arc length column
@@ -663,6 +670,131 @@ subroutine confirm_ts(env, mol, hess, settings, result)
 
 end subroutine confirm_ts
 
+!> Report every IRC option the selected integrator does not read.
+!>
+!> The counterpart of `xtb_landscape_tasks_ts::ts_report_ignored_options` for
+!> the reaction path (report 220, finding H2).  The four integrators of this
+!> task share one settings type but not one set of knobs: the sphere
+!> relaxation and the limit cycle guard belong to `gs`, the Euler substeps and
+!> the surface fit to `lqa`/`hpc`, the modified Bulirsch-Stoer corrector and
+!> the Hessian update to `hpc`/`eulerpc`, and the coarse phase of the
+!> predictor-corrector to `eulerpc` alone.  A knob that no code path of the
+!> selected integrator reads was accepted and then silently discarded, which
+!> invalidates a study without a trace; each one is reported once and the run
+!> continues (`env%warning` is the fatal error under `--strict` here, as
+!> everywhere in the suite).
+!>
+!> The predicate is the effective value, compared against a default constructed
+!> settings object, exactly like its transition state counterpart: the
+!> settings record no per-option "was given" flag, and repeating a default
+!> could not have changed anything.
+!>
+!> Not covered, on purpose: `--lirc-hessian-file` is reported by the provider
+!> factory for every task, `--lirc-sccacc`/`--lirc-hess-step` by
+!> `landscape_engine%report_unused_hess_step`, and `--lirc-step` outside the
+!> GS window by `check_irc_settings`.
+subroutine irc_report_ignored_options(env, settings)
+   !> Computational environment
+   type(TEnvironment), intent(inout) :: env
+   !> IRC settings of this run
+   type(landscape_irc_settings), intent(in) :: settings
+
+   type(landscape_irc_settings) :: dflt
+   integer :: method
+
+   method = settings%method
+
+   ! --- the GS sphere relaxation and its guards --------------------------
+   if (settings%max_micro_cycles /= dflt%max_micro_cycles) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_gs])) &
+         & call report_ignored_irc_option(env, '--lirc-micro-cycles', method, &
+         & 'the gs macro step only')
+   end if
+   if (settings%micro_step_thresh /= dflt%micro_step_thresh) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_gs])) &
+         & call report_ignored_irc_option(env, '--lirc-micro-thresh', method, &
+         & 'the gs macro step only')
+   end if
+   if (settings%osc_window /= dflt%osc_window) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_gs])) &
+         & call report_ignored_irc_option(env, '--lirc-osc-window', method, &
+         & 'the gs macro step only')
+   end if
+   if (settings%adaptive .neqv. dflt%adaptive) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_gs])) &
+         & call report_ignored_irc_option(env, '--lirc-adaptive', method, &
+         & 'the gs macro step only')
+   end if
+
+   ! --- the analytic propagation of lqa and hpc --------------------------
+   if (settings%euler_n /= dflt%euler_n) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_lqa, p_landscape_irc_hpc])) &
+         & call report_ignored_irc_option(env, '--lirc-euler-n', method, &
+         & 'the lqa and hpc integrators only')
+   end if
+
+   ! --- the predictor-corrector ------------------------------------------
+   if (settings%loose_cycles /= dflt%loose_cycles) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_eulerpc])) &
+         & call report_ignored_irc_option(env, '--lirc-loose-cycles', method, &
+         & 'the eulerpc integrator only')
+   end if
+   if (settings%dwi_n /= dflt%dwi_n) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_hpc, p_landscape_irc_eulerpc])) &
+         & call report_ignored_irc_option(env, '--lirc-dwi-n', method, &
+         & 'the hpc and eulerpc integrators only')
+   end if
+   if (settings%mbs_max_k /= dflt%mbs_max_k) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_hpc, p_landscape_irc_eulerpc])) &
+         & call report_ignored_irc_option(env, '--lirc-mbs-max-k', method, &
+         & 'the hpc and eulerpc integrators only')
+   end if
+   if (settings%mbs_points /= dflt%mbs_points) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_hpc, p_landscape_irc_eulerpc])) &
+         & call report_ignored_irc_option(env, '--lirc-mbs-points', method, &
+         & 'the hpc and eulerpc integrators only')
+   end if
+   if (settings%mbs_tol /= dflt%mbs_tol) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_hpc, p_landscape_irc_eulerpc])) &
+         & call report_ignored_irc_option(env, '--lirc-mbs-tol', method, &
+         & 'the hpc and eulerpc integrators only')
+   end if
+   if (settings%hessian_recalc /= dflt%hessian_recalc) then
+      if (.not. irc_method_reads(method, [p_landscape_irc_hpc, p_landscape_irc_eulerpc])) &
+         & call report_ignored_irc_option(env, '--lirc-recalc', method, &
+         & 'the hpc and eulerpc integrators only')
+   end if
+
+end subroutine irc_report_ignored_options
+
+!> True if `method` is one of the `readers`.
+pure logical function irc_method_reads(method, readers)
+   !> Selected IRC integrator
+   integer, intent(in) :: method
+   !> Integrators that read the option
+   integer, intent(in) :: readers(:)
+
+   irc_method_reads = any(readers == method)
+
+end function irc_method_reads
+
+!> Report one accepted IRC option the selected integrator ignores.
+subroutine report_ignored_irc_option(env, flag, method, readers)
+   !> Computational environment
+   type(TEnvironment), intent(inout) :: env
+   !> Spelling of the option
+   character(len=*), intent(in) :: flag
+   !> Selected integrator
+   integer, intent(in) :: method
+   !> Integrators that read the option, as prose
+   character(len=*), intent(in) :: readers
+
+   call env%warning(flag//" is not read by --lirc-method "// &
+      & trim(landscape_irc_method_name(method))//" (it configures "//readers// &
+      & "); the value has no effect on this run", 'landscape_irc')
+
+end subroutine report_ignored_irc_option
+
 !> Validate the IRC settings the task itself depends on.
 subroutine check_irc_settings(env, settings, ok)
    character(len=*), parameter :: source = 'landscape_irc'
@@ -673,10 +805,31 @@ subroutine check_irc_settings(env, settings, ok)
    !> True if every parameter is usable
    logical, intent(out) :: ok
 
+   character(len=400) :: buffer
+
    ok = .true.
    if (settings%step_length <= 0.0_wp) then
       call env%error("the IRC step length must be positive", source)
       ok = .false.
+   else if (settings%method == p_landscape_irc_gs) then
+      ! A4 of report 220 section 4: the positivity check is the only one this
+      ! value gets, although the GS macro step has a *measured* window.  The
+      ! value is not refused - a user may have a reason - but the measured
+      ! behaviour of the two ends of the window is stated (report 67: from
+      ! 0.20 on the sphere relaxation stalls in a cancelling two cycle; at
+      ! 0.40 the endpoint still sits 0.236 bohr from the nearest minimum, and
+      ! the HPC fallback reaches a third well), so a study that used a larger
+      ! step knows what it bought.  `hpc`/`eulerpc` are correct at 0.20 and
+      ! are not reported.
+      if (settings%step_length < 5.0e-2_wp .or. settings%step_length > 1.5e-1_wp) then
+         buffer = "--lirc-step "// &
+            & trim(adjustl(landscape_real_to_string(settings%step_length, '(f9.3)')))// &
+            & " is outside the 0.05-0.15 bohr*amu^1/2 window measured for "//&
+            & "--lirc-method gs: the walk stalls in a two cycle from 0.20 on "//&
+            & "and a 0.40 step stops 0.236 bohr from the nearest minimum (the "//&
+            & "HPC fallback reaches a third well); the requested value is used"
+         call env%warning(trim(buffer), source)
+      end if
    end if
    if (settings%euler_n < 2) then
       call env%error("the IRC predictor needs at least two Euler substeps", source)

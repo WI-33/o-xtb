@@ -449,10 +449,17 @@ end subroutine engine_invalidate
 
 !> Evaluate energy and gradient at the current geometry.
 !>
-!> A cache hit (bitwise identical geometry) returns the stored values without
-!> calling the calculator, which is essential for the repeated geometries of
-!> NEB/IRC scans.  On a cache miss the backend is evaluated exactly once and
-!> the result is stored.
+!> A cache hit (bitwise identical geometry, atom numbers, electronic
+!> temperature and SCC accuracy) returns the stored values without calling the
+!> calculator.  The cache holds **one** evaluation - it is keyed on the *last*
+!> geometry, not on a history - so it can only help when the very same point is
+!> evaluated twice in a row.  No kernel of the suite does that: an
+!> optimisation moves every geometry and a band or an IRC walk interleaves its
+!> images/points, so the measured hit count is **0 in all six tasks** (report
+!> 218).  What a band does need - its two fixed endpoints, which *are*
+!> re-evaluated at an unchanged geometry - is cached by
+!> `xtb_landscape_path_neb::landscape_band_endpoint_cache`, not here.  On a
+!> cache miss the backend is evaluated exactly once and the result is stored.
 !>
 !> An unconverged SCC is never returned as a usable energy/gradient: the
 !> failure is counted (`n_scf_fail`), reported with `env%warning` and turned

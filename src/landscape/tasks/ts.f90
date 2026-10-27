@@ -81,7 +81,8 @@ module xtb_landscape_tasks_ts
    use xtb_landscape_settings, only : landscape_ts_settings, landscape_vib_settings, &
       & landscape_opt_settings, landscape_engine_control, landscape_restart_name, &
       & landscape_ts_method_name, p_landscape_ts_prfo, p_landscape_ts_bprfo, &
-      & p_landscape_ts_dimer, p_landscape_ts_cineb, p_landscape_ts_autoneb, &
+      & p_landscape_ts_dimer, p_landscape_ts_neb, p_landscape_ts_cineb, &
+      & p_landscape_ts_autoneb, p_landscape_ts_string, p_landscape_ts_gsm, &
       & landscape_ts_method_is_band, landscape_ts_method_is_string, landscape_log_failed, &
       & landscape_lowercase, landscape_int_to_string
    use xtb_landscape_results, only : landscape_result, landscape_vib_result
@@ -245,6 +246,13 @@ subroutine landscape_ts(env, mol, chk, calc, settings, result)
             & 'landscape_ts')
       end if
    end if
+
+   ! H2 of report 220 section 4: an option of this run type that only a subset
+   ! of the methods reads must not disappear without a word when the user
+   ! selected a method outside that subset.  The table is
+   ! `ts_report_ignored_options`, one report per ignored option, fatal under
+   ! `--strict` like every warning of the suite.
+   call ts_report_ignored_options(env, settings)
 
    ! `$fix` is supported by the single ended searches (P-RFO, B-PRFO, dimer:
    ! their accepted step is projected onto the subspace `$fix` leaves free,
@@ -955,6 +963,330 @@ subroutine landscape_ts_band(env, mol, chk, engine, settings, result)
       & candidates, cand_energies, has_candidates, result)
 
 end subroutine landscape_ts_band
+
+!> Report every transition state option the selected method does not read.
+!>
+!> Every flag below is accepted by the parser and stored in the settings
+!> object, but only the methods named in its reader set read the field, so a
+!> run that selects a different method silently discarded the request
+!> (report 220, finding H2; the reader sets are measured by grepping each
+!> field through `saddle/`, `path/` and `tasks/`).  The report names the flag
+!> and the method that ignores it, and the run continues: the value cannot
+!> have influenced anything, so there is nothing to abort, and `--strict`
+!> already turns `env%warning` into the fatal error it turns every warning
+!> into.
+!>
+!> The predicate is the **effective value**, because the settings type records
+!> no per-option "was given" flag (the parser stores the value only): a knob
+!> is reported when its value differs from the one a default constructed
+!> settings object carries.  Repeating a default on the command line is
+!> therefore not reported - and that is the harmless case, because such a
+!> value could not have changed anything.
+!>
+!> Not covered here, on purpose: `--lts-product` has its own report above
+!> (it is about a file name, not a method), `--lts-hessian-file` is reported by
+!> the provider factory for every task and `--lts-hess-step`/`--lts-sccacc`/
+!> `--lts-hess-jobs` by `landscape_engine%report_unused_hess_step`, which
+!> reports the observed run instead of the selected method.
+subroutine ts_report_ignored_options(env, settings)
+   character(len=*), parameter :: source = 'landscape_ts'
+   !> Computational environment
+   type(TEnvironment), intent(inout) :: env
+   !> Transition state settings of this run
+   type(landscape_ts_settings), intent(in) :: settings
+
+   ! A default constructed object carries the documented defaults, so the
+   ! comparison below cannot drift away from `types/settings.f90`.
+   type(landscape_ts_settings) :: dflt
+   integer :: method
+
+   method = settings%method
+
+   ! --- the single ended P-RFO and B-PRFO searches -----------------------
+   if (settings%trust /= dflt%trust) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-trust', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%trust_max /= dflt%trust_max) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-trust-max', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%hlow /= dflt%hlow) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-hlow', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%mode_overlap_min /= dflt%mode_overlap_min) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-mode-overlap-min', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%target_mode /= dflt%target_mode) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-target-mode', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%init_mode /= dflt%init_mode) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-init-mode', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%recalc /= dflt%recalc) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-recalc', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+   if (settings%escape_step /= dflt%escape_step) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-escape-step', method, &
+         & 'the single ended P-RFO and B-PRFO searches only')
+   end if
+
+   ! --- the restricted-step B-PRFO only ----------------------------------
+   if (settings%alpha /= dflt%alpha) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-alpha', method, &
+         & 'the restricted-step B-PRFO search only')
+   end if
+   if (settings%max_micro_cycles /= dflt%max_micro_cycles) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_bprfo])) &
+         & call report_ignored_ts_option(env, '--lts-micro-cycles', method, &
+         & 'the restricted-step B-PRFO search only')
+   end if
+
+   ! --- the rigid mode projection of the single ended searches -----------
+   if (settings%remove_rigid .neqv. dflt%remove_rigid) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_prfo, p_landscape_ts_bprfo, &
+            & p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-no-rigid', method, &
+         & 'the prfo, bprfo and dimer searches only')
+   end if
+
+   ! --- the dimer search --------------------------------------------------
+   if (settings%delta /= dflt%delta) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-delta', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%dR /= dflt%dR) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-dr', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%rot_max_iter /= dflt%rot_max_iter) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-rot-max-iter', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%rot_alpha /= dflt%rot_alpha) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-rot-alpha', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%rot_f_rms_th /= dflt%rot_f_rms_th) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-rot-frms', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%n_init /= dflt%n_init) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-ninit', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%seed /= dflt%seed) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-seed', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%step0 /= dflt%step0) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-step0', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%step_max /= dflt%step_max) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-step-max', method, &
+         & 'the dimer search only')
+   end if
+   if (settings%translate_max_iter /= dflt%translate_max_iter) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_dimer])) &
+         & call report_ignored_ts_option(env, '--lts-translate-max-iter', method, &
+         & 'the dimer search only')
+   end if
+
+   ! --- the band kernel of neb, cineb and autoneb ------------------------
+   if (settings%path%n_images /= dflt%path%n_images) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-images', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%k_min /= dflt%path%k_min) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-kmin', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%k_max /= dflt%path%k_max) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-kmax', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%k_decay /= dflt%path%k_decay) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-kdecay', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%use_dynamic_k .neqv. dflt%path%use_dynamic_k) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-no-dynamic-k', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%ifidpp .neqv. dflt%path%ifidpp) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-no-idpp', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%f_rms_avg_tol /= dflt%path%f_rms_avg_tol) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-frms-avg', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+
+   ! --- the band kernel plus the GSM growth control ----------------------
+   if (settings%path%climb .neqv. dflt%path%climb) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-climb', method, &
+         & 'the neb, cineb, autoneb and gsm searches only')
+   end if
+   if (settings%path%climb_switch_rms /= dflt%path%climb_switch_rms) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-climb-switch', method, &
+         & 'the neb, cineb and autoneb searches only')
+   end if
+   if (settings%path%align .neqv. dflt%path%align) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-no-align', method, &
+         & 'the neb, cineb, autoneb and gsm searches only')
+   end if
+   if (settings%path%max_displ /= dflt%path%max_displ) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-max-displ', method, &
+         & 'the neb, cineb, autoneb and gsm searches only')
+   end if
+   if (settings%path%f_rms_max_tol /= dflt%path%f_rms_max_tol) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_neb, p_landscape_ts_cineb, &
+            & p_landscape_ts_autoneb, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-frms-max', method, &
+         & 'the neb, cineb, autoneb and gsm searches only')
+   end if
+
+   ! --- every band method ------------------------------------------------
+   if (settings%path%relax_ends .neqv. dflt%path%relax_ends) then
+      if (.not. landscape_ts_method_is_band(method)) &
+         & call report_ignored_ts_option(env, '--lts-relax-ends', method, &
+         & 'the band searches only')
+   end if
+
+   ! --- AutoNEB ----------------------------------------------------------
+   if (settings%path%autoneb_nstart /= dflt%path%autoneb_nstart) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-autoneb-nstart', method, &
+         & 'the autoneb search only')
+   end if
+   if (settings%path%max_paths /= dflt%path%max_paths) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-autoneb-max-paths', method, &
+         & 'the autoneb search only')
+   end if
+   if (settings%path%max_depth /= dflt%path%max_depth) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-autoneb-max-depth', method, &
+         & 'the autoneb search only')
+   end if
+   if (allocated(settings%path%autoneb_restart_file)) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_autoneb])) &
+         & call report_ignored_ts_option(env, '--lts-autoneb-restart', method, &
+         & 'the autoneb search only')
+   end if
+
+   ! --- the string and GSM searches --------------------------------------
+   if (settings%path%string_nnodes /= dflt%path%string_nnodes) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-string-nnodes', method, &
+         & 'the string and gsm searches only')
+   end if
+   if (settings%path%string_grow_tol /= dflt%path%string_grow_tol) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-string-grow-tol', method, &
+         & 'the string and gsm searches only')
+   end if
+   if (settings%path%string_ds /= dflt%path%string_ds) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-string-ds', method, &
+         & 'the string and gsm searches only')
+   end if
+   if (settings%path%string_nu2 /= dflt%path%string_nu2) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-string-nu2', method, &
+         & 'the string and gsm searches only')
+   end if
+   if (settings%path%string_grow_steps /= dflt%path%string_grow_steps) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-string-grow-steps', method, &
+         & 'the string and gsm searches only')
+   end if
+   if (settings%path%string_spline .neqv. dflt%path%string_spline) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-no-string-spline', method, &
+         & 'the string and gsm searches only')
+   end if
+   if (settings%path%string_history .neqv. dflt%path%string_history) then
+      if (.not. ts_method_reads(method, [p_landscape_ts_string, p_landscape_ts_gsm])) &
+         & call report_ignored_ts_option(env, '--lts-string-history', method, &
+         & 'the string and gsm searches only')
+   end if
+
+end subroutine ts_report_ignored_options
+
+!> True if `method` is one of the `readers`.
+pure logical function ts_method_reads(method, readers)
+   !> Selected transition state method
+   integer, intent(in) :: method
+   !> Methods that read the option
+   integer, intent(in) :: readers(:)
+
+   ts_method_reads = any(readers == method)
+
+end function ts_method_reads
+
+!> Report one accepted transition state option the selected method ignores.
+subroutine report_ignored_ts_option(env, flag, method, readers)
+   !> Computational environment
+   type(TEnvironment), intent(inout) :: env
+   !> Spelling of the option
+   character(len=*), intent(in) :: flag
+   !> Selected method
+   integer, intent(in) :: method
+   !> Methods that read the option, as prose
+   character(len=*), intent(in) :: readers
+
+   call env%warning(flag//" is not read by --lts-method "// &
+      & trim(landscape_ts_method_name(method))//" (it configures "//readers// &
+      & "); the value has no effect on this run", 'landscape_ts')
+
+end subroutine report_ignored_ts_option
 
 !> Message of a chain-of-states result: `converged` for a converged search.
 pure function band_message(converged, message) result(text)

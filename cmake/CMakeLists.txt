@@ -104,7 +104,29 @@ endif()
 
 # Customize compiler flags
 set(CMAKE_Fortran_FLAGS_DEBUG "${CMAKE_Fortran_FLAGS_DEBUG} ${bounds}" PARENT_SCOPE)
-set(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS} ${dialects}" PARENT_SCOPE)
+# A `set()` in this directory scope does not update the variable locally, so the
+# dialect flags are collected in one variable and written to the parent once.
+set(xtb_fortran_flags "${CMAKE_Fortran_FLAGS} ${dialects}")
+
+# Link-time optimisation (default OFF).
+#
+# LTO is the only switch that lets the compiler inline across translation units
+# in all three hot pools at once (SCC linear algebra, integral gradients,
+# dispersion), so it was measured here rather than assumed
+# (docs/_simplify-recon/236-lto-experiment.md).  It is off by default because
+# the reproducibility contract of this tree is a *byte identical* binary from
+# two clean builds of one commit (docs/_simplify-recon/209): parallel LTO
+# partitions make the link output depend on the number of LTRANS jobs, so the
+# flag is pinned to a single job (``-flto=1``) instead of the ``-flto`` default,
+# which is ``-flto=auto`` / jobserver.  Do not relax that.
+option(XTB_LTO "Enable deterministic link-time optimisation (-flto=1)" OFF)
+if(XTB_LTO)
+  string(APPEND xtb_fortran_flags " -flto=1")
+  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto=1" PARENT_SCOPE)
+  set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto=1" PARENT_SCOPE)
+  set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -flto=1" PARENT_SCOPE)
+endif()
+set(CMAKE_Fortran_FLAGS "${xtb_fortran_flags}" PARENT_SCOPE)
 
 
 # Populate xtb_version.fh with metadata

@@ -124,7 +124,11 @@
 !>    grows beyond `band_divergence_factor` times its initial value) is
 !>    aborted by the safety net with `diverged = .true.`, and a band that
 !>    merely fails to meet the criterion within the budget is reported as
-!>    unconverged by the iteration limit.  Both are failures of the search,
+!>    unconverged by the iteration limit.  A third, weaker case sits between
+!>    them: a band whose force norm rises in `band_descent_warn_streak`
+!>    consecutive iterations is *reported* (once, naming `--lts-max-displ`)
+!>    but neither moved nor aborted, because it may still recover - only the
+!>    10^3 net is an abort.  All of these are failures of the search,
 !>    never silent: a band that returns `converged = .true.` reproduces the
 !>    analytic barrier (checked by the unit test `band-initial-path-scan` on
 !>    every configuration of the scan).  AutoNEB inherits the window.
@@ -156,6 +160,16 @@ module xtb_landscape_path_neb
    !> Abort the propagation once the band force norm has grown beyond this
    !> factor of its initial value (the divergence safety net)
    real(wp), parameter :: band_divergence_factor = 1.0e3_wp
+
+   !> Consecutive iterations of a band whose force norm rises before the
+   !> propagation is reported as non-descending (H3 of report 220 section 4).
+   !> The divergence safety net above only fires at 10^3 times the initial
+   !> norm, so a *slowly* non-descending band used to spend the whole step
+   !> budget and then report a bare "maximum number of steps".  Ten iterations
+   !> is above the longest rise the calibrated runs show (the LEPS band with
+   !> the climbing image grows by a factor 10 for a few iterations in a row)
+   !> and short enough to be visible inside a default budget.
+   integer, parameter :: band_descent_warn_streak = 10
 
    !> Result of a band optimisation.
    type :: landscape_band_type
@@ -846,7 +860,15 @@ subroutine landscape_band_optimize(env, model, settings, reactant, product, &
    real(wp), allocatable :: trial(:, :, :), x(:), x_new(:), g(:), g_new(:)
    real(wp), allocatable :: d(:), en_new(:), grad_new(:, :, :), f_new(:, :, :)
    real(wp) :: ci_rms, merit_initial
-    integer :: iter, n_images, nat, ndim, highest, n_evaluated
+   !> Force norm of the previous iteration and of the current one (hartree/bohr)
+   real(wp) :: prev_force_norm, force_norm
+   !> Number of consecutive iterations with a rising force norm
+   integer :: n_rise
+   !> True once the non-descending propagation was reported
+   logical :: descent_warned
+   !> Formatting buffer of the descent report (one line, ~300 characters)
+   character(len=400) :: buffer
+   integer :: iter, n_images, nat, ndim, highest, n_evaluated
    logical :: fail, ok, steepest, converged, has_climbing, aborted
 
    band%converged = .false.
@@ -921,6 +943,12 @@ subroutine landscape_band_optimize(env, model, settings, reactant, product, &
    iter = 0
    converged = .false.
    aborted = .false.
+   ! H3 of report 220 section 4: the descent counter starts at the norm of the
+   ! initial band, so iteration 1 is compared against the state the run began
+   ! in.  A pure counter: it changes no step, no criterion and no exit.
+   prev_force_norm = merit_initial
+   n_rise = 0
+   descent_warned = .false.
    do
       has_climbing = band%climbing_image > 0
       ci_rms = 0.0_wp
@@ -1004,7 +1032,35 @@ subroutine landscape_band_optimize(env, model, settings, reactant, product, &
       ! two orders of magnitude above the largest transient of the calibrated
       ! runs (measured: 4.4e1 on the LEPS band with the climbing image,
       ! report 37 section 3.1(d)).
-      if (band_force_norm(forces) > band_divergence_factor*merit_initial) then
+      force_norm = band_force_norm(forces)
+
+      ! H3 of report 220 section 4: the net above only fires at 10^3 times the
+      ! initial norm, so a *slowly* non-descending band burns the whole step
+      ! budget and reports a bare "maximum number of steps" - the user cannot
+      ! tell a propagation that was still improving from one that never
+      ! descended.  The counter reports the latter once.  It is deliberately a
+      ! **warning and not an abort**: the calibrated bands show rises of a few
+      ! iterations in a row before recovering (report 37 section 3.1(d)), so an
+      ! abort here would kill a band that would have converged - which is worse
+      ! than the loud slow run, because a silent wrong answer is worse than
+      ! both.  The counter is state only: no step, criterion or exit changes.
+      if (force_norm > prev_force_norm) then
+         n_rise = n_rise + 1
+      else
+         n_rise = 0
+      end if
+      prev_force_norm = force_norm
+      if (n_rise >= band_descent_warn_streak .and. .not. descent_warned) then
+         descent_warned = .true.
+         write(buffer, '(a,i0,a,es9.3,a)') "the band force norm rose in each of "//&
+            & "the last ", n_rise, " iterations (--lts-max-displ ", &
+            & settings%max_displ, " bohr): the propagation is not descending "//&
+            & "and can spend the whole step budget without converging; the "//&
+            & "knob to look at is --lts-max-displ (the run continues)"
+         call env%warning(trim(buffer), source)
+      end if
+
+      if (force_norm > band_divergence_factor*merit_initial) then
          band%diverged = .true.
          aborted = .true.
          band%message = "the band diverged from the path: the band force norm "//&

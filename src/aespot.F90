@@ -14,6 +14,8 @@
 !
 ! You should have received a copy of the GNU Lesser General Public License
 ! along with xtb.  If not, see <https://www.gnu.org/licenses/>.
+!
+! Modified by the o-xtb landscape task suite, 2026.
 
 module xtb_aespot
    use xtb_mctc_accuracy, only : wp
@@ -299,7 +301,7 @@ subroutine mmompop_cpu(nat,nao,aoat2,xyz,p,s,dpint,qpint,dipm,qp)
    real(wp), intent(out):: qp(:, :)
 
    real(wp) xk1,xl1,xk2,xl2,pij,tii,tjj
-   real(wp) pqm,pdmk,pdml,ps,ra(3)
+   real(wp) pqm,pdmk,pdml,ps,ra(3),xa(3)
 
    integer i,j,k,l,ii,jj,kl,kj
 
@@ -310,7 +312,7 @@ subroutine mmompop_cpu(nat,nao,aoat2,xyz,p,s,dpint,qpint,dipm,qp)
    qp = 0.0_wp
 
    !$omp parallel default(none) &
-   !$omp private(i,j,k,l,kl,kj,ii,jj,ra,pij,ps,xk1,xk2,xl1,xl2,pdmk,pdml,pqm,tii,tjj,dipm_omp,qp_omp) &
+   !$omp private(i,j,k,l,kl,kj,ii,jj,ra,xa,pij,ps,xk1,xk2,xl1,xl2,pdmk,pdml,pqm,tii,tjj,dipm_omp,qp_omp) &
    !$omp shared(nao, nat, aoat2, s, p, dpint, qpint, xyz, dipm, qp)
 
 !$ allocate(qp_omp(size(qp, dim=1), size(qp, dim=2)), source = 0.0_wp)
@@ -320,13 +322,20 @@ subroutine mmompop_cpu(nat,nao,aoat2,xyz,p,s,dpint,qpint,dipm,qp)
    associate(dipm_omp => dipm, qp_omp => qp)
 #endif
 
-   !$omp do schedule(dynamic,32) collapse(2)
-   do i = 1,nao
-      do j = 1,nao
-         if (j >= i) cycle
-         ii = aoat2(i)
-         jj = aoat2(j)
-         ra(1:3) = xyz(1:3,ii)
+   !$omp do schedule(dynamic,32)
+   do i = 2,nao
+      ! the pair-independent work of the row: the centre, its coordinates and
+      ! the neighbour's coordinates (reloaded only when the neighbour atom
+      ! changes, which is once per atom rather than once per AO pair)
+      ii = aoat2(i)
+      ra(1:3) = xyz(1:3,ii)
+      jj = 0
+      xa(1:3) = 0.0_wp
+      do j = 1,i-1
+         if (aoat2(j) /= jj) then
+            jj = aoat2(j)
+            xa(1:3) = xyz(1:3,jj)
+         endif
          pij = p(j,i)
          ps = pij*s(j,i)
          !  the qpint is stored as xx,yy,zz,xy,xz,yz (from integral routine)
@@ -334,7 +343,7 @@ subroutine mmompop_cpu(nat,nao,aoat2,xyz,p,s,dpint,qpint,dipm,qp)
          !  i,e. xx,xy,yy,xz,yz,zz
          do k = 1,3
             xk1 = ra(k)
-            xk2 = xyz(k,jj)
+            xk2 = xa(k)
             pdmk = pij*dpint(k,j,i)
             tii = xk1*ps-pdmk
             tjj = xk2*ps-pdmk
@@ -345,7 +354,7 @@ subroutine mmompop_cpu(nat,nao,aoat2,xyz,p,s,dpint,qpint,dipm,qp)
                kl = k*(k-1)/2+l
                kj = k+l+1
                xl1 = ra(l)
-               xl2 = xyz(l,jj)
+               xl2 = xa(l)
                pdml = pij*dpint(l,j,i)
                pqm = pij*qpint(kj,j,i)
                tii = pdmk*xl1+pdml*xk1-xl1*xk1*ps-pqm
@@ -618,14 +627,15 @@ subroutine aniso_electro_cpu(aesData,nat,at,xyz,q,dipm,qp,gab3,gab5,e,epol)
    !$omp private(i,j,k,kj,l,kl,q1,rr,dp1,qp1,rij,r2,ed,eq,edd,tt,tt3) &
    !$omp shared(nat, q, xyz, dipm, qp, gab3, gab5) &
    !$omp reduction(+:e01, e02, e11) &
-   !$omp schedule(dynamic,32) collapse(2)
-   do i = 1, nat
-      do j = 1, nat
-         if (j >= i) cycle
-         q1 = q(i)
-         rr(1:3) = xyz(1:3,i)
-         dp1(1:3) = dipm(1:3,i)
-         qp1(1:6) = qp(1:6,i)
+   !$omp schedule(dynamic,32)
+   do i = 2, nat
+      ! the row-invariant multipole of centre i is loaded once, not once per
+      ! pair; the pair step itself is unchanged
+      q1 = q(i)
+      rr(1:3) = xyz(1:3,i)
+      dp1(1:3) = dipm(1:3,i)
+      qp1(1:6) = qp(1:6,i)
+      do j = 1, i-1
          kj = i*(i-1)/2 + j
          rij(1:3) = xyz(1:3,j)-rr(1:3)
          r2 = sum(rij*rij)
@@ -734,7 +744,7 @@ subroutine setvsdq(aesData,nat,at,xyz,q,dipm,qp,gab3,gab5,vs,vd,vq)
    real(wp), intent(in) :: gab3(:,:)
    real(wp), intent(in) :: gab5(:,:)
    real(wp), intent(out) :: vs(:),vd(:,:),vq(:,:)
-   real(wp) ra(3),dra(3),rb(3),stmp,dum3a,dum5a,t1a,t2a,t3a,t4a,r2a
+   real(wp) ra(3),dra(3),rb(3),stmp,dum3a,dum5a,t1a,t2a,t3a,r2a
    real(wp) r2ab,t1b,t2b,t3b,t4b,dum3b,dum5b,dtmp(3),qtmp(6),g3,g5
    real(wp) qs1,qs2
    integer i,j,k,l1,l2,ll,m,mx,ki,kj
@@ -745,7 +755,7 @@ subroutine setvsdq(aesData,nat,at,xyz,q,dipm,qp,gab3,gab5,vs,vd,vq)
    !$omp parallel do default(none) &
    !$omp private(i,j,l1,l2,ll,ki) &
    !$omp private(ra,rb,dra,stmp,dtmp,qtmp,g3,g5,dum3a,dum5a,dum3b,dum5b) &
-   !$omp private(t1a,t2a,t3a,t4a,r2a,r2ab,qs1,qs2) &
+   !$omp private(t1a,t2a,t3a,r2a,r2ab,qs1,qs2) &
    !$omp shared(aesData,nat,at,q,dipm,xyz,qp,gab3,gab5,vs,vd,vq) &
    !$omp schedule(static)
    do i = 1,nat
@@ -753,6 +763,13 @@ subroutine setvsdq(aesData,nat,at,xyz,q,dipm,qp,gab3,gab5,vs,vd,vq)
       stmp = 0.0_wp
       dtmp = 0.0_wp
       qtmp = 0.0_wp
+      ! R_C * R_C for this centre only: it does not depend on j, so it is
+      ! summed once per centre instead of once per pair (same three terms in
+      ! the same order, hence the same value).
+      r2a = 0.0_wp
+      do l1 = 1,3
+         r2a = r2a+ra(l1)*ra(l1)      ! R_C * R_C
+      enddo
       do j = 1,nat
          g3 = gab3(j,i)
          g5 = gab5(j,i)
@@ -760,22 +777,17 @@ subroutine setvsdq(aesData,nat,at,xyz,q,dipm,qp,gab3,gab5,vs,vd,vq)
          dra(1:3) = ra(1:3)-rb(1:3)
          dum3a = 0.0_wp ! collect gab3 dependent terms
          dum5a = 0.0_wp ! collect gab5 dependent terms
-         r2a = 0.0_wp
          r2ab = 0.0_wp
          t1a = 0.0_wp
          t2a = 0.0_wp
          t3a = 0.0_wp
-         t4a = 0.0_wp
          ll = 0
          do l1 = 1,3
             ! potential from dipoles
-            r2a = r2a+ra(l1)*ra(l1)      ! R_C * R_C
             r2ab = r2ab+dra(l1)*dra(l1)  ! R_AC * R_AC
             t1a = t1a+ra(l1)*dra(l1)     ! R_C * R_AC  : for dip-q (q-shift) and dip-dip (q-shift)
             t2a = t2a+dipm(l1,j)*dra(l1) ! mu_A * R_AC : for q-dip and dip-dip (q-shift)
             t3a = t3a+ra(l1)*dipm(l1,j)  ! R_C * mu_A  : for diag. dip-dip (q-shift)
-            t4a = t4a+dra(l1)*dra(l1)*ra(l1)*ra(l1) ! (R_C o R_AC)**"2(square of Hadamard product) :
-            ! results from trace remove from q-pole (q-shift)
             do l2 = 1,3
                ll = lin(l1,l2)
                ! potential from quadrupoles

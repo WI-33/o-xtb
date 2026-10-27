@@ -166,6 +166,31 @@ module test_landscape_path
       procedure :: hessian => counting_leps_hessian
    end type counting_leps_model
 
+   !> Potential whose gradient grows with every evaluation.
+   !>
+   !> The descent counter of the band kernel (H3 of report 220 section 4)
+   !> fires on consecutive iterations with a rising band force norm.  No
+   !> analytic surface of the suite does that for ten iterations in a row (the
+   !> calibrated LEPS band rises for a few iterations and recovers), so this
+   !> potential makes the property unconditional: the gradient does not depend
+   !> on the coordinates at all and its scale is the evaluation count, so every
+   !> iteration sees a larger force and the band can neither descend nor
+   !> converge.  It is a property of this test potential, not of a physical
+   !> surface.
+   type, extends(landscape_energy_model) :: stiffening_model
+      !> Number of `evaluate` calls so far
+      integer :: n_eval = 0
+      !> Increment of the gradient per evaluation (hartree/bohr); it is far
+      !> above any spring force of the band, so the band force norm is the
+      !> gradient and grows with every iteration
+      real(wp) :: gradient_step = 1.0_wp
+   contains
+      !> Energy (zero) and a growing gradient
+      procedure :: evaluate => stiffening_evaluate
+      !> Hessian (not used by a band, always reports failure)
+      procedure :: hessian => stiffening_hessian
+   end type stiffening_model
+
 contains
 
 !> Energy and gradient of the counting LEPS wrapper, one call counted.
@@ -280,6 +305,7 @@ subroutine collect_landscape_path(testsuite)
       new_unittest("band-align-effect", test_band_align_effect), &
       new_unittest("band-fixed-endpoints", test_band_fixed_endpoints), &
       new_unittest("band-endpoint-cache", test_band_endpoint_cache), &
+      new_unittest("band-descent-warning", test_band_descent_warning), &
       new_unittest("leps-neb-barrier", test_leps_neb_barrier), &
       new_unittest("leps-cineb-barrier", test_leps_cineb_barrier), &
       new_unittest("cineb-switch-threshold", test_cineb_switch), &
@@ -1306,6 +1332,126 @@ subroutine test_band_endpoint_cache(error)
       & "the shifted reactant energy is the cached value of the first band")
 
 end subroutine test_band_endpoint_cache
+
+!> Energy and gradient of the stiffening test potential.
+subroutine stiffening_evaluate(self, x, energy, gradient, fail)
+   !> Model
+   class(stiffening_model), intent(inout) :: self
+   !> Flattened coordinates (bohr), ignored
+   real(wp), intent(in) :: x(:)
+   !> Energy (hartree)
+   real(wp), intent(out) :: energy
+   !> Flattened gradient (hartree/bohr)
+   real(wp), intent(out) :: gradient(:)
+   !> Failure flag
+   logical, intent(out) :: fail
+
+   self%n_eval = self%n_eval + 1
+   fail = .false.
+   energy = 0.0_wp
+   gradient = 0.0_wp
+   gradient(1) = self%gradient_step*real(self%n_eval, wp)
+
+end subroutine stiffening_evaluate
+
+!> Hessian of the stiffening potential: a band never asks for one.
+subroutine stiffening_hessian(self, x, hess, fail)
+   !> Model
+   class(stiffening_model), intent(inout) :: self
+   !> Flattened coordinates (bohr)
+   real(wp), intent(in) :: x(:)
+   !> Dense Hessian (hartree/bohr^2)
+   real(wp), intent(out) :: hess(:, :)
+   !> Failure flag
+   logical, intent(out) :: fail
+
+   hess = 0.0_wp
+   fail = .true.
+
+end subroutine stiffening_hessian
+
+!> A band that never descends is reported once, not aborted (H3 of report 220).
+!>
+!> The divergence safety net of the propagation only fires at 10^3 times the
+!> initial force norm, so a *slowly* rising band burned the whole step budget
+!> and reported a bare "maximum number of steps".  The counter reports ten
+!> consecutive rising iterations once and leaves the propagation alone: the
+!> run is not aborted, no step changes, and the iteration count of the run is
+!> the configured budget in both directions of the threshold.
+subroutine test_band_descent_warning(error)
+   type(error_type), allocatable, intent(out) :: error
+   type(TEnvironment) :: env
+   ! The potential counts its own evaluations, so each run needs its own
+   ! instance: a shared counter would start the second run at a larger
+   ! gradient scale and change the shape of the series.
+   type(stiffening_model) :: quiet_model, rising_model
+   type(landscape_path_settings) :: set
+   type(landscape_band_type) :: band
+   real(wp), allocatable :: images(:, :, :), energies(:), forces(:, :, :)
+   integer :: n_reported
+
+   set%n_images = 5
+   set%printlevel = 0
+   set%climb = .false.
+   set%align = .false.
+   set%ifidpp = .false.
+
+   ! 8 iterations: below the threshold of 10, so the run stays silent.
+   call init(env)
+   set%max_steps = 8
+   call landscape_band_optimize(env, quiet_model, set, leps_reactant(), leps_product(), &
+      & images, energies, forces, band)
+   call check(error, allocated(images), "the silent band run returned no images")
+   if (allocated(error)) return
+   call check(error, band%n_iter == 8, "the silent band run did not use its budget")
+   if (allocated(error)) return
+   call check(error, .not. band%converged, &
+      & "the stiffening band reported convergence")
+   if (allocated(error)) return
+   n_reported = descent_reports(env)
+   call check(error, n_reported == 0, &
+      & "a band below the descent threshold was already reported")
+   if (allocated(error)) return
+
+   ! 12 iterations: the threshold is crossed at iteration 10 and the report is
+   ! emitted once, whatever the remaining two iterations do.
+   call init(env)
+   set%max_steps = 12
+   call landscape_band_optimize(env, rising_model, set, leps_reactant(), leps_product(), &
+      & images, energies, forces, band)
+   call check(error, allocated(images), "the reported band run returned no images")
+   if (allocated(error)) return
+   call check(error, band%n_iter == 12, &
+      & "the descent report changed the trajectory - the band stopped early")
+   if (allocated(error)) return
+   call check(error, .not. band%converged, &
+      & "the stiffening band reported convergence")
+   if (allocated(error)) return
+   call check(error, .not. band%diverged, &
+      & "a slowly rising band was aborted by the divergence net")
+   if (allocated(error)) return
+   n_reported = descent_reports(env)
+   call check(error, n_reported == 1, "the non-descending band was not reported once")
+   if (allocated(error)) return
+   call check(error, index(env%log(env%nLog)%message, '--lts-max-displ') > 0, &
+      & "the descent report does not name the knob that governs the step bound")
+
+end subroutine test_band_descent_warning
+
+!> Number of "the band force norm rose" reports in the environment log.
+integer function descent_reports(env) result(n)
+   !> Computational environment
+   type(TEnvironment), intent(in) :: env
+
+   integer :: i
+
+   n = 0
+   do i = 1, env%nLog
+      if (index(env%log(i)%message, "the band force norm rose in each of the last") > 0) &
+         & n = n + 1
+   end do
+
+end function descent_reports
 
 !> Plain NEB on the LEPS surface reproduces the closed form barrier.
 subroutine test_leps_neb_barrier(error)

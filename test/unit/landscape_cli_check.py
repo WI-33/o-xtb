@@ -71,6 +71,8 @@ mode mirrors one CMake test one-to-one:
   irctermination <exe> <input> <rundir> -> xtb/landscape-irc-termination
   ircswap <exe> <input> <rundir>     -> xtb/landscape-irc-swap
   ircosc <exe> <input> <rundir>      -> xtb/landscape-irc-osc-window
+  ircstep <exe> <input> <rundir>     -> xtb/landscape-irc-step-range
+  unusedopts <exe> <input> <rundir>  -> xtb/landscape-unused-options
   blasthreads <exe> <input> <rundir>  -> xtb/landscape-blas-threads
   blasthreads-timing <exe> <input> <rundir> -> xtb/landscape-blas-threads-timing
   banner <exe> <input> <rundir>       -> xtb/landscape-banner
@@ -2697,6 +2699,184 @@ def check_irc_swap(exe, inp, rundir):
     if plain_bwd != swapped_fwd:
         fail("--lirc-swap did not exchange the backward endpoint: %s vs %s"
              % (plain_bwd, swapped_fwd))
+
+
+def check_unused_options(exe, inp, rundir):
+    """A method specific option of a task is reported when the method ignores it.
+
+    Mirrors `xtb/landscape-unused-options` (report 220, finding H2; closed in
+    report 238).  Three sources of silence were measured before the guard:
+    the dimer knobs of `--lts` under `prfo`/`bprfo`, the band knobs of `--lts`
+    under a single ended method, `--lirc-adaptive` under every integrator but
+    `gs`, and `--l*-hessian-file` with a Hessian source that reads no file
+    (even a nonexistent name left the run at exit 0).  All of them are now
+    reported, so every check below has three directions: the report appears
+    for the mismatched combination, it does not appear for the matching one,
+    and `--strict` turns it into a fatal error.  Nothing else may change: the
+    matching runs are the ones the suite already accepts.
+    """
+
+    def report(name, args, workdir):
+        status, output = run(exe, inp, args + ["--norestart"],
+                             os.path.join(rundir, workdir))
+        return status, output
+
+    lts = ["--gfn", "2", "--lts"]
+
+    # (1) --lts-delta belongs to the dimer only
+    status, output = report("ts-mismatch",
+                            lts + ["--lts-method", "prfo", "--lts-delta", "0.1"],
+                            "unused-ts-mismatch")
+    if status != 0:
+        fail("the mismatched --lts-delta run failed with status %d" % status,
+             output)
+    if "--lts-delta is not read by --lts-method prfo" not in output:
+        fail("--lts-delta under prfo was silently ignored", output)
+    if "the value has no effect on this run" not in output:
+        fail("the report does not say that the value has no effect", output)
+
+    status, output = report("ts-matched",
+                            lts + ["--lts-method", "dimer", "--lts-delta", "0.1",
+                                   "--lts-max-steps", "4"],
+                            "unused-ts-matched")
+    if "--lts-delta is not read" in output:
+        fail("--lts-delta was reported although the dimer reads it", output)
+
+    status, output = report("ts-strict",
+                            lts + ["--lts-method", "prfo", "--lts-delta", "0.1",
+                                   "--strict"],
+                            "unused-ts-strict")
+    if status == 0:
+        fail("--strict accepted the ignored --lts-delta", output)
+    if "--lts-delta is not read by --lts-method prfo" not in output:
+        fail("the fatal report does not name the flag", output)
+
+    # (2) the band knob of a single ended method (the same table, another row)
+    status, output = report("ts-band",
+                            lts + ["--lts-method", "prfo", "--lts-images", "7"],
+                            "unused-ts-band")
+    if status != 0:
+        fail("the mismatched --lts-images run failed with status %d" % status,
+             output)
+    if "--lts-images is not read by --lts-method prfo" not in output:
+        fail("--lts-images under prfo was silently ignored", output)
+
+    # (3) --lirc-adaptive belongs to the GS macro step only
+    irc = ["--gfn", "2", "--lirc"]
+    status, output = report("irc-mismatch",
+                            irc + ["--lirc-method", "hpc", "--lirc-adaptive"],
+                            "unused-irc-mismatch")
+    if status != 0:
+        fail("the mismatched --lirc-adaptive run failed with status %d"
+             % status, output)
+    if "--lirc-adaptive is not read by --lirc-method hpc" not in output:
+        fail("--lirc-adaptive under hpc was silently ignored", output)
+
+    status, output = report("irc-matched",
+                            irc + ["--lirc-method", "gs", "--lirc-adaptive"],
+                            "unused-irc-matched")
+    if "--lirc-adaptive is not read" in output:
+        fail("--lirc-adaptive was reported although gs reads it", output)
+
+    status, output = report("irc-strict",
+                            irc + ["--lirc-method", "hpc", "--lirc-adaptive",
+                                   "--strict"],
+                            "unused-irc-strict")
+    if status == 0:
+        fail("--strict accepted the ignored --lirc-adaptive", output)
+    if "--lirc-adaptive is not read by --lirc-method hpc" not in output:
+        fail("the fatal report does not name the flag", output)
+
+    # (4) --l*-hessian-file with a source that reads no file.  The matched
+    # direction needs a real file, so the first run writes one (`--lvib`
+    # writes the `hessian` file) and the second one reads it back through the
+    # `file` source.
+    status, output = report("hessfile-mismatch",
+                            ["--gfn", "2", "--lopt", "--lopt-hessian-file",
+                             "no_such_hessian"],
+                            "unused-hessfile-mismatch")
+    if status != 0:
+        fail("a --lopt-hessian-file with the numerical source failed with "
+             "status %d" % status, output)
+    if "--l*-hessian-file is ignored" not in output:
+        fail("an unusable --lopt-hessian-file was silently ignored", output)
+    if "the Hessian source 'numerical' reads no file" not in output:
+        fail("the report does not name the source that ignores the file", output)
+
+    status, output = report("hessfile-strict",
+                            ["--gfn", "2", "--lopt", "--lopt-hessian-file",
+                             "no_such_hessian", "--strict"],
+                            "unused-hessfile-strict")
+    if status == 0:
+        fail("--strict accepted the ignored --lopt-hessian-file", output)
+    if "--l*-hessian-file is ignored" not in output:
+        fail("the fatal report does not name the flag", output)
+
+    status, output = report("hessfile-source",
+                            ["--gfn", "2", "--lvib"],
+                            "unused-hessfile-source")
+    if status != 0:
+        fail("the preparation --lvib run failed with status %d" % status, output)
+    status, output = report("hessfile-matched",
+                            ["--gfn", "2", "--lvib", "--lvib-hessian", "file",
+                             "--lvib-hessian-file", "hessian"],
+                            "unused-hessfile-source")
+    if status != 0:
+        fail("the file Hessian run failed with status %d" % status, output)
+    if "--l*-hessian-file is ignored" in output:
+        fail("--lvib-hessian-file was reported although the file source "
+             "reads it", output)
+
+
+def check_irc_step_range(exe, inp, rundir):
+    """`--lirc-step` outside the measured GS window is reported, not refused.
+
+    Mirrors `xtb/landscape-irc-step-range` (report 220, finding A4; closed in
+    report 238).  The task validated `step_length > 0` only, although the GS
+    macro step has a measured window of 0.05-0.15 bohr*amu^1/2: from 0.20 on
+    the sphere relaxation stalls in a cancelling two cycle and a 0.40 step
+    stops 0.236 bohr from the nearest minimum (report 67).  The guard is a
+    warning for `gs` alone - `hpc`/`eulerpc` are correct at 0.20 - and the
+    requested value is still used, so a user with a reason is not blocked.
+    """
+    base = ["--gfn", "2", "--lirc"]
+
+    def run_step(label, method, step, extra=None):
+        args = base + ["--lirc-method", method, "--lirc-step", step,
+                       "--norestart"]
+        if extra:
+            args += extra
+        return run(exe, inp, args, os.path.join(rundir, label))
+
+    status, output = run_step("step-gs-large", "gs", "0.4")
+    if status != 0:
+        fail("the gs run at step 0.4 failed with status %d" % status, output)
+    if "--lirc-step 0.400 is outside the 0.05-0.15" not in output:
+        fail("the gs run at step 0.4 did not report the measured window",
+             output)
+    if "--lirc-method gs" not in output:
+        fail("the window report does not name the method it belongs to",
+             output)
+
+    status, output = run_step("step-gs-ok", "gs", "0.1")
+    if status != 0:
+        fail("the gs run at step 0.1 failed with status %d" % status, output)
+    if "--lirc-step" in output and "is outside" in output:
+        fail("a gs step inside the measured window was reported", output)
+
+    # the window is gs's: hpc is correct at 0.20 and is not reported
+    status, output = run_step("step-hpc-large", "hpc", "0.4")
+    if status != 0:
+        fail("the hpc run at step 0.4 failed with status %d" % status, output)
+    if "is outside the 0.05-0.15" in output:
+        fail("--lirc-step 0.4 was reported for hpc, which has no such window",
+             output)
+
+    status, output = run_step("step-gs-strict", "gs", "0.4", ["--strict"])
+    if status == 0:
+        fail("--strict accepted the out of window gs step", output)
+    if "is outside the 0.05-0.15" not in output:
+        fail("the fatal report does not name the window", output)
 
 
 def check_irc_osc(exe, inp, rundir):
@@ -6723,6 +6903,10 @@ def main():
         check_irc_pc(exe, inp, rundir)
     elif mode == "ircosc":
         check_irc_osc(exe, inp, rundir)
+    elif mode == "ircstep":
+        check_irc_step_range(exe, inp, rundir)
+    elif mode == "unusedopts":
+        check_unused_options(exe, inp, rundir)
     elif mode == "ircswap":
         check_irc_swap(exe, inp, rundir)
     elif mode == "irctermination":

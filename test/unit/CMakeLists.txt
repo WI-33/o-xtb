@@ -4150,6 +4150,46 @@ endif()
 ]=])
 set(LANDSCAPE-CLI-PY "${CMAKE_CURRENT_SOURCE_DIR}/landscape_cli_check.py")
 
+# H2 of the performance campaign (report 220 section 4, closed in report 238):
+# a method specific option of `--lts`/`--lirc` was accepted, echoed and
+# silently ignored by a method that does not read it, and `--l*-hessian-file`
+# was ignored by every Hessian source but `file` (measured: even a nonexistent
+# file name left the run at exit 0).  The guard reports each ignored option
+# once and `--strict` makes the report fatal; the matching combinations stay
+# silent.  The check asserts both directions and the strict case for the three
+# sources of silence, so `ctest -R landscape-unused-options` is red on the
+# unguarded binary.
+add_test("xtb/landscape-unused-options"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-CLI-PY}
+  "-DARGS=unusedopts;${LANDSCAPE-E2E-XTB};${LANDSCAPE-HCN};${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-unused-options"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-unused-options
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
+
+# A4 of the same report: `--lirc-step` validated `> 0` only, although the GS
+# macro step has a measured window of 0.05-0.15 bohr*amu^1/2 (from 0.20 on the
+# walk stalls in a two cycle, a 0.40 step stops 0.236 bohr from the nearest
+# minimum).  The guard reports a value outside that window for `gs` alone and
+# keeps the requested value; `hpc`/`eulerpc` have no such window and stay
+# quiet.
+add_test("xtb/landscape-irc-step-range"
+  ${CMAKE_COMMAND}
+  -DPYTHON=${Python3_EXECUTABLE}
+  -DSCRIPT=${LANDSCAPE-CLI-PY}
+  "-DARGS=ircstep;${LANDSCAPE-E2E-XTB};${LANDSCAPE-HCN};${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-irc-step-range"
+  -DRUNDIR=${CMAKE_CURRENT_BINARY_DIR}/landscape-cli-irc-step-range
+  -P "${CMAKE_CURRENT_BINARY_DIR}/landscape_cli_py.cmake")
+
+# Both run the engine on small fixtures, so they need the single-threaded
+# environment of the rest of the landscape CLI checks (PLAN appendix A).
+set_tests_properties(
+  "xtb/landscape-unused-options"
+  "xtb/landscape-irc-step-range"
+  PROPERTIES
+  ENVIRONMENT "XTBPATH=${PROJECT_SOURCE_DIR};OMP_NUM_THREADS=1"
+)
+
 # `src/prog/argparser.f90` classified `--gfn=0` as *not* a flag - its `=` is
 # not a flag character - and the unknown-option reporter only sees flags, so
 # the token was dropped and the run silently used the GFN2 default.  `=` is

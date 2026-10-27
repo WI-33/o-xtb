@@ -292,6 +292,23 @@ subroutine new_landscape_hessian_provider(env, source, provider, sccacc, filenam
       return
    end if
 
+   ! H2 of report 220 section 4: `--l*-hessian-file` is accepted, echoed by the
+   ! frequency task and silently ignored by every source but `file` (measured:
+   ! even a file name that does not exist left the run at exit 0).  The name is
+   ! reported here - the one place every task builds its provider through - so
+   ! the notice cannot be forgotten by a task; an unknown source is refused
+   ! below and gets no second message.
+   if (present(filename)) then
+      if (len_trim(filename) > 0 .and. landscape_hessian_source_known(source)) then
+         if (landscape_lowercase(source) /= 'file') then
+            call env%warning("--l*-hessian-file is ignored: the Hessian source '"// &
+               & landscape_lowercase(source)//"' reads no file (only "// &
+               & "'--l*-hessian file' does); the name has no effect on this run", &
+               & source_name)
+         end if
+      end if
+   end if
+
    select case (landscape_lowercase(source))
    case ('numerical')
       ! Refuse a worker count this build cannot deliver instead of ignoring it;
