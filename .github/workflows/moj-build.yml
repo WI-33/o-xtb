@@ -1,5 +1,7 @@
-# Windows x64 build of g-xtb - Size Optimized with High Performance /O2 and Interative Terminal for i7-6820HQ
-name: Windows g-xtb MKL build
+# Native Windows x64 build of o-xtb with Intel ifx + oneMKL.
+# Uses a 128 MiB executable stack plus heap-array mitigation for the TS Hessian stack-overflow report.
+# Trigger manually: GitHub Actions -> Windows MKL stack fix -> Run workflow.
+name: Windows MKL stack fix
 
 on:
   workflow_dispatch:
@@ -16,12 +18,8 @@ jobs:
         shell: pwsh
 
     steps:
-      - name: Checkout g-xtb repo (v2.0.1)
+      - name: Checkout
         uses: actions/checkout@v5
-        with:
-          repository: grimme-lab/g-xtb
-          ref: v2.0.1
-          submodules: recursive
 
       - name: Install Intel oneAPI HPC Toolkit
         run: |
@@ -79,6 +77,8 @@ jobs:
               lines[i] = indent + 'if(WIN32 AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")' + ("\r\n" if lines[i].endswith("\r\n") else "\n" if lines[i].endswith("\n") else "")
               changed += 1
           result = "".join(lines)
+          # Idempotent: accept a previously patched source, but never silently
+          # continue if GNU linker flags remain in an unguarded WIN32 block.
           if changed == 0:
               if re.search(r"if\s*\(\s*WIN32\s*\)(?:(?!endif\s*\().)*(?:-Wl,|-static)(?:(?!endif\s*\().)*endif\s*\(", result, re.I | re.S):
                   raise SystemExit("Found GNU linker flags in an unguarded WIN32 block; inspect CMakeLists.txt.")
@@ -93,31 +93,48 @@ jobs:
       - name: Initialize MSVC environment
         uses: ilammy/msvc-dev-cmd@v1
 
-      - name: Configure with Intel Fortran and MKL (O2 Performance, Size Optimized)
+      - name: Configure with Intel Fortran and MKL (128 MiB stack + heap arrays)
         run: |
           $ErrorActionPreference = 'Stop'
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DCMAKE_Fortran_COMPILER=ifx `
             -DCMAKE_C_COMPILER=icx `
-            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728 /RELEASE /INCREMENTAL:NO' `
+            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728' `
             '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG /heap-arrays' `
             -DBLA_VENDOR=Intel10_64lp `
             -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
-            -DWITH_TESTS=OFF -DTEST_DRIVE_BUILD_TESTING=OFF
+            -DWITH_TESTS=ON -DTEST_DRIVE_BUILD_TESTING=OFF
           if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
 
       - name: Build
         run: |
           cmake --build build --parallel 2 --verbose 2>&1 | Tee-Object -FilePath build.log
           if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
-          if (-not (Test-Path '.\build\gxtb.exe')) { throw 'build\gxtb.exe was not produced.' }
+          if (-not (Test-Path '.\build\oxtb.exe')) { throw 'build\oxtb.exe was not produced.' }
+
+      - name: Smoke test (water, GFN2 single point)
+        env:
+          KMP_STACKSIZE: 64m
+          OMP_STACKSIZE: 64m
+          OMP_NUM_THREADS: '1'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          3
+          water
+          O 0.0 0.0 0.0
+          H 0.758602 0.0 -0.504284
+          H -0.758602 0.0 -0.504284
+          '@ | Set-Content -Encoding ascii water.xyz
+          .\build\oxtb.exe water.xyz --sp --gfn 2 2>&1 | Tee-Object -FilePath smoke-test.log
+          if ($LASTEXITCODE -ne 0) { throw 'GFN2 water smoke test failed.' }
 
       - name: Package minimal runtime and launch helper
         run: |
           $ErrorActionPreference = 'Stop'
-          $exe = '.\build\gxtb.exe'
-          if (-not (Test-Path $exe)) { throw 'gxtb.exe was not produced.' }
+          $exe = '.\build\oxtb.exe'
+          if (-not (Test-Path $exe)) { throw 'oxtb.exe was not produced.' }
           if (-not (Test-Path '.\build\share')) { throw 'build\share is missing; refusing to create incomplete package.' }
 
           $dist = Join-Path $PWD 'dist'
@@ -140,7 +157,7 @@ jobs:
             Copy-Item $found.FullName (Join-Path $dist $name) -Force
           }
 
-          # Copy only common Intel runtime dependencies if present
+          # Copy only common Intel runtime dependencies if present; avoid copying the entire oneAPI tree.
           $runtimeRoots = @(
             (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
             (Join-Path $oneApi 'compiler\latest\bin')
@@ -156,33 +173,34 @@ jobs:
             }
           }
 
-          # ZMIANY: cmd /k uruchamia terminal, wprowadza zmienne i nie zamyka go, oczekujac na Twoje polecenia.
           @'
           @echo off
-          echo =======================================================
-          echo  Srodowisko g-xTB zostalo skonfigurowane dla i7-6820HQ
-          echo  Pamiec oraz 8 watkow sa gotowe do pracy.
-          echo  Wpisz swoja komende, np: gxtb.exe plik.xyz --sp
-          echo =======================================================
-          cmd /k "set KMP_STACKSIZE=64m && set OMP_STACKSIZE=64m && set OMP_NUM_THREADS=8"
-          '@ | Set-Content -Encoding ascii (Join-Path $dist 'run-gxtb.bat')
+          setlocal
+          set "KMP_STACKSIZE=64m"
+          set "OMP_STACKSIZE=64m"
+          if not defined OMP_NUM_THREADS set "OMP_NUM_THREADS=1"
+          "%~dp0oxtb.exe" %*
+          exit /b %errorlevel%
+          '@ | Set-Content -Encoding ascii (Join-Path $dist 'run-oxtb.bat')
 
           @'
-          g-xTB Windows x64 / Intel ifx + oneMKL (Optimized Release)
-          This package includes gxtb.exe, share data, the requested MKL DLLs,
+          o-xtb Windows x64 / Intel ifx + oneMKL
+          This package includes oxtb.exe, share data, the requested MKL DLLs,
           and any common Intel runtime DLLs found by the build workflow.
-          By default, this build leverages 8 threads for i7-6820HQ.
+          Run calculations with run-oxtb.bat so KMP_STACKSIZE and OMP_STACKSIZE
+          are set to 64 MiB. Example: run-oxtb.bat input.xyz --sp --gfn 2
+          Stack/heap changes are a mitigation, not a verified fix for every TS Hessian.
           '@ | Set-Content -Encoding utf8 (Join-Path $dist 'README-RUNTIME.txt')
 
           Write-Host 'Package contents:'
           Get-ChildItem $dist -Recurse -File | Select-Object FullName, Length
-          foreach ($name in @('gxtb.exe','mkl_avx2.2.dll','mkl_core.2.dll','mkl_intel_thread.2.dll','run-gxtb.bat')) {
+          foreach ($name in @('oxtb.exe','mkl_avx2.2.dll','mkl_core.2.dll','mkl_intel_thread.2.dll','run-oxtb.bat')) {
             if (-not (Test-Path (Join-Path $dist $name))) { throw "Package is missing $name" }
           }
 
       - name: Upload Windows x64 artifact
         uses: actions/upload-artifact@v4
         with:
-          name: gxtb-windows-x64-v2.0.1-O2
+          name: oxtb-windows-x64-mkl-stackfix
           path: dist/
           if-no-files-found: error
