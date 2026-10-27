@@ -1,72 +1,188 @@
-# Natywna kompilacja o-xtb na Windows przy użyciu Intel OneAPI (ifx) oraz Intel MKL.
-# Wersja w pełni niezależna, zoptymalizowana i w 100% statyczna dla i7-6820HQ (Skylake).
-name: Windows Intel MKL Static Build
+# Windows x64 build of g-xtb - Size Optimized with High Performance /O2 and Interative Terminal for i7-6820HQ
+name: Windows g-xtb MKL build
+
 on:
-   push:
-   pull_request:
-   workflow_dispatch:
-env:
-   BUILD_DIR: _build
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
 jobs:
-   intel-mkl-cmake-build:
-      runs-on: windows-latest
-      steps:
-         - name: Checkout code
-           uses: actions/checkout@v4
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: pwsh
 
-         # Zaktualizowana wersja v1.4, która poprawnie obsługuje instalację Intel MKL i konfigurację zmiennych
-         - name: Install Intel Fortran Compiler (ifx) & MKL
-           uses: fortran-lang/setup-fortran@v1.4
-           with:
-             compiler: intel
-             install_mkl: true
-             update-environment: true
+    steps:
+      - name: Checkout g-xtb repo (v2.0.1)
+        uses: actions/checkout@v5
+        with:
+          repository: grimme-lab/g-xtb
+          ref: v2.0.1
+          submodules: recursive
 
-         # Konfiguracja kompilacji:
-         # /O3 /QxCORE-AVX2 -> Maksymalna optymalizacja pod instrukcje AVX2/FMA3 dla Twojego i7
-         # /MT -> Wbudowanie bibliotek uruchomieniowych C/C++ w plik .exe
-         # /Qmkl:sequential -> Wstrzykuje kompletny, statyczny kod MKL bezpośrednio do pliku wykonywalnego
-         # /link /STACK:16777216 -> Zwiększa pamięć podręczną stosu do 16MB zapobiegając Stack Overflow
-         - name: Configure build
-           shell: cmd
-           run: |
-            cmake -B "%BUILD_DIR%" -G Ninja ^
-            -DCMAKE_Fortran_COMPILER=ifx ^
-            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF -DWITH_TESTS=ON ^
-            -DBUILD_SHARED_LIBS=OFF ^
-            -DCMAKE_BUILD_TYPE=Release ^
-            -DCMAKE_Fortran_FLAGS_RELEASE="/O3 /QxCORE-AVX2 /MT /Qmkl:sequential /DNDEBUG" ^
-            -DCMAKE_EXE_LINKER_FLAGS="/link /STACK:16777216" ^
-            -DTEST_DRIVE_BUILD_TESTING=OFF
+      - name: Install Intel oneAPI HPC Toolkit
+        run: |
+          $ErrorActionPreference = 'Stop'
+          winget install --id Intel.OneAPI.HPCToolkit --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
+          if ($LASTEXITCODE -ne 0) {
+            throw "Could not install Intel oneAPI HPC Toolkit (exit $LASTEXITCODE)."
+          }
 
-         # Kompilacja całego projektu przy użyciu Ninja
-         - name: Build project
-           shell: cmd
-           run: |
-            cmake --build "%BUILD_DIR%" --parallel
+      - name: Initialize oneAPI environment and verify compiler/MKL
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
+          if errorlevel 1 exit /b 1
+          where ifx
+          if errorlevel 1 exit /b 1
+          if not defined MKLROOT exit /b 1
+          if not exist "%MKLROOT%\lib\mkl_rt.lib" exit /b 1
+          echo MKLROOT=%MKLROOT%>>%GITHUB_ENV%
+          echo PATH=%PATH%>>%GITHUB_ENV%
+          echo LIB=%LIB%>>%GITHUB_ENV%
+          echo INCLUDE=%INCLUDE%>>%GITHUB_ENV%
 
-         # Testy numeryczne uruchamiane na 4 rdzeniach procesora i7
-         - name: Run the bounded test subset
-           shell: cmd
-           run: |
-            cd "%BUILD_DIR%"
-            set OMP_NUM_THREADS=4
-            ctest --output-on-failure -R "^(o-xtb/gfn2|o-xtb/landscape-optimize-math|xtb/Argparser_print_(version|help|license)|xtb/Info|xtb/xtbpath-default|xtb/landscape-(opt|opt-energy|ljson-default|gfn-value))$" -E "o-xtb/docking|xtb/CAPI|mctc-lib/ncoord"
-           
-         # Przygotowanie czystej i niezależnej paczki z binariami oraz parametrami obliczeniowymi
-         - name: Package artifacts
-           shell: cmd
-           run: |
-            mkdir dist\bin
-            mkdir dist\share\o-xtb
-            xcopy /Y "%BUILD_DIR%\oxtb.exe" dist\bin\
-            xcopy /Y "param_*.txt" dist\share\o-xtb\ 2>nul || (exit 0)
-            xcopy /Y ".param_gfnff.xtb" dist\share\o-xtb\ 2>nul || (exit 0)
-         
-         # Zapis gotowej, skompresowanej paczki ZIP na serwerze GitHub Actions
-         - name: Upload Windows executable
-           uses: actions/upload-artifact@v4
-           with:
-            name: oxtb-windows-intel-mkl-static
-            path: dist/
-            if-no-files-found: error
+      - name: Install CMake and Ninja
+        run: |
+          python -m pip install --upgrade cmake ninja
+          if ($LASTEXITCODE -ne 0) { throw 'Could not install CMake/Ninja.' }
+
+      # The repository has GNU ld flags under WIN32. Restrict those flags to GNU.
+      - name: Make Windows linker flags compiler-specific
+        run: |
+          $ErrorActionPreference = 'Stop'
+          @'
+          import pathlib, re
+          p = pathlib.Path("CMakeLists.txt")
+          source = p.read_text(encoding="utf-8-sig")
+          lines = source.splitlines(keepends=True)
+          stack = []
+          targets = []
+          for i, line in enumerate(lines):
+              stripped = line.strip()
+              m = re.match(r"if\s*\((.*?)\)", stripped, re.I)
+              if m:
+                  stack.append({"start": i, "condition": m.group(1).strip(), "depth": len(stack)})
+              if re.match(r"endif\s*\(", stripped, re.I) and stack:
+                  block = stack.pop()
+                  block_text = "".join(lines[block["start"]:i + 1])
+                  cond = re.sub(r"\s+", "", block["condition"]).upper()
+                  has_gnu_flags = ("-Wl," in block_text or '"-static"' in block_text or "-static" in block_text)
+                  if cond == "WIN32" and has_gnu_flags:
+                      targets.append(block["start"])
+          changed = 0
+          for i in targets:
+              indent = re.match(r"\s*", lines[i]).group(0)
+              lines[i] = indent + 'if(WIN32 AND CMAKE_Fortran_COMPILER_ID STREQUAL "GNU")' + ("\r\n" if lines[i].endswith("\r\n") else "\n" if lines[i].endswith("\n") else "")
+              changed += 1
+          result = "".join(lines)
+          if changed == 0:
+              if re.search(r"if\s*\(\s*WIN32\s*\)(?:(?!endif\s*\().)*(?:-Wl,|-static)(?:(?!endif\s*\().)*endif\s*\(", result, re.I | re.S):
+                  raise SystemExit("Found GNU linker flags in an unguarded WIN32 block; inspect CMakeLists.txt.")
+              print("No unguarded GNU linker block needed patching (already fixed or not present).")
+          else:
+              print(f"Restricted {changed} GNU linker block(s) to the GNU Fortran compiler.")
+          p.write_text(result, encoding="utf-8", newline="")
+          '@ | Set-Content -Encoding ascii patch_windows_link.py
+          python patch_windows_link.py
+          if ($LASTEXITCODE -ne 0) { throw 'CMake linker patch failed.' }
+
+      - name: Initialize MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Configure with Intel Fortran and MKL (O2 Performance, Size Optimized)
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DCMAKE_Fortran_COMPILER=ifx `
+            -DCMAKE_C_COMPILER=icx `
+            '-DCMAKE_EXE_LINKER_FLAGS=/STACK:134217728 /RELEASE /INCREMENTAL:NO' `
+            '-DCMAKE_Fortran_FLAGS_RELEASE=/O2 /DNDEBUG /heap-arrays' `
+            -DBLA_VENDOR=Intel10_64lp `
+            -DWITH_TBLITE=OFF -DWITH_CPCMX=OFF -DWITH_OBJECT=OFF `
+            -DWITH_TESTS=OFF -DTEST_DRIVE_BUILD_TESTING=OFF
+          if ($LASTEXITCODE -ne 0) { throw 'CMake configure failed.' }
+
+      - name: Build
+        run: |
+          cmake --build build --parallel 2 --verbose 2>&1 | Tee-Object -FilePath build.log
+          if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+          if (-not (Test-Path '.\build\gxtb.exe')) { throw 'build\gxtb.exe was not produced.' }
+
+      - name: Package minimal runtime and launch helper
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = '.\build\gxtb.exe'
+          if (-not (Test-Path $exe)) { throw 'gxtb.exe was not produced.' }
+          if (-not (Test-Path '.\build\share')) { throw 'build\share is missing; refusing to create incomplete package.' }
+
+          $dist = Join-Path $PWD 'dist'
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item $exe $dist -Force
+          Copy-Item '.\build\share' $dist -Recurse -Force
+
+          # The three MKL DLLs requested for this installation.
+          $oneApi = 'C:\Program Files (x86)\Intel\oneAPI'
+          $mklRoots = @($env:MKLROOT, (Join-Path $oneApi 'mkl\latest')) |
+            Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+          $requiredMklDlls = @('mkl_avx2.2.dll', 'mkl_core.2.dll', 'mkl_intel_thread.2.dll')
+          foreach ($name in $requiredMklDlls) {
+            $found = $null
+            foreach ($root in $mklRoots) {
+              $found = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($found) { break }
+            }
+            if (-not $found) { throw "Required MKL DLL '$name' was not found under MKLROOT/oneAPI MKL." }
+            Copy-Item $found.FullName (Join-Path $dist $name) -Force
+          }
+
+          # Copy only common Intel runtime dependencies if present
+          $runtimeRoots = @(
+            (Join-Path $oneApi 'compiler\latest\redist\intel64_win\compiler'),
+            (Join-Path $oneApi 'compiler\latest\bin')
+          ) | Where-Object { Test-Path $_ } | Select-Object -Unique
+          $runtimeNames = @('libiomp5md.dll', 'svml_dispmd.dll', 'libifcoremd.dll', 'libifportmd.dll', 'libmmd.dll')
+          foreach ($name in $runtimeNames) {
+            foreach ($root in $runtimeRoots) {
+              $runtime = Get-ChildItem -Path $root -Filter $name -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+              if ($runtime) {
+                Copy-Item $runtime.FullName (Join-Path $dist $name) -Force
+                break
+              }
+            }
+          }
+
+          # ZMIANY: cmd /k uruchamia terminal, wprowadza zmienne i nie zamyka go, oczekujac na Twoje polecenia.
+          @'
+          @echo off
+          echo =======================================================
+          echo  Srodowisko g-xTB zostalo skonfigurowane dla i7-6820HQ
+          echo  Pamiec oraz 8 watkow sa gotowe do pracy.
+          echo  Wpisz swoja komende, np: gxtb.exe plik.xyz --sp
+          echo =======================================================
+          cmd /k "set KMP_STACKSIZE=64m && set OMP_STACKSIZE=64m && set OMP_NUM_THREADS=8"
+          '@ | Set-Content -Encoding ascii (Join-Path $dist 'run-gxtb.bat')
+
+          @'
+          g-xTB Windows x64 / Intel ifx + oneMKL (Optimized Release)
+          This package includes gxtb.exe, share data, the requested MKL DLLs,
+          and any common Intel runtime DLLs found by the build workflow.
+          By default, this build leverages 8 threads for i7-6820HQ.
+          '@ | Set-Content -Encoding utf8 (Join-Path $dist 'README-RUNTIME.txt')
+
+          Write-Host 'Package contents:'
+          Get-ChildItem $dist -Recurse -File | Select-Object FullName, Length
+          foreach ($name in @('gxtb.exe','mkl_avx2.2.dll','mkl_core.2.dll','mkl_intel_thread.2.dll','run-gxtb.bat')) {
+            if (-not (Test-Path (Join-Path $dist $name))) { throw "Package is missing $name" }
+          }
+
+      - name: Upload Windows x64 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: gxtb-windows-x64-v2.0.1-O2
+          path: dist/
+          if-no-files-found: error
