@@ -1,5 +1,5 @@
 
-name: Build xtb Windows MKL (i7-6820HQ, stack 128 MiB)
+name: Build xtb Windows MKL AVX2 (128 MiB stack)
 
 on:
   workflow_dispatch:
@@ -10,7 +10,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 60
+    timeout-minutes: 90
 
     env:
       OMP_NUM_THREADS: "8"
@@ -30,45 +30,76 @@ jobs:
           submodules: recursive
           fetch-depth: 1
 
+      - name: Initialize MSVC x64 environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
       - name: Install Intel oneAPI HPC Toolkit
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
 
-          winget install `
-            --id Intel.OneAPI.HPCToolkit `
-            --exact `
-            --silent `
-            --accept-package-agreements `
-            --accept-source-agreements `
-            --disable-interactivity
+          $url = "https://registrationcenter-download.intel.com/akdlm/IRC_NAS/0cb67a0d-67f6-410b-868b-f4a0a17ff0cf/intel-oneapi-toolkit-2026.1.1.32_offline.exe"
+          $installer = Join-Path $env:RUNNER_TEMP "oneapi-offline.exe"
+
+          Write-Host "Pobieranie instalatora Intel oneAPI..."
+          curl.exe -L --fail --retry 3 --output $installer $url
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Nie udało się pobrać instalatora Intel oneAPI."
+          }
+
+          if (-not (Test-Path $installer)) {
+            throw "Nie znaleziono pobranego instalatora."
+          }
+
+          Write-Host "Instalacja Intel oneAPI. Może potrwać kilka minut..."
+
+          $arguments = @(
+            "-s",
+            "-a",
+            "--silent",
+            "--eula", "accept",
+            "-p=NEED_VS2022_INTEGRATION=0"
+          )
+
+          $process = Start-Process `
+            -FilePath $installer `
+            -ArgumentList $arguments `
+            -Wait `
+            -PassThru
+
+          if ($process.ExitCode -ne 0) {
+            throw "Instalator Intel oneAPI zwrócił kod $($process.ExitCode)."
+          }
 
           $setvars = "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
 
           if (-not (Test-Path $setvars)) {
-            throw "Nie znaleziono setvars.bat: $setvars"
+            throw "Nie znaleziono setvars.bat po instalacji."
           }
 
-          "ONEAPI_SETVARS=$setvars" |
-            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "Intel oneAPI zainstalowane."
 
       - name: Install Meson and Ninja
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+
           py -3 -m pip install --upgrade pip meson ninja
+
+          if ($LASTEXITCODE -ne 0) {
+            throw "Instalacja Meson/Ninja nie powiodła się."
+          }
 
           py -3 -m meson --version
           py -3 -m ninja --version
 
-      - name: Configure and compile with Intel MKL
-        shell: pwsh
+      - name: Verify Intel compilers
+        shell: cmd
         run: |
-          $ErrorActionPreference = "Stop"
-
-          $buildScript = @'
-          @echo off
-          call "%ONEAPI_SETVARS%" intel64
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
           if errorlevel 1 exit /b 1
 
           where ifx
@@ -77,10 +108,20 @@ jobs:
           where icx
           if errorlevel 1 exit /b 1
 
+          ifx --version
+          icx --version
+
+      - name: Configure and compile xtb with MKL
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
+          if errorlevel 1 exit /b 1
+
           set FC=ifx
           set CC=icx
+
           set FCFLAGS=/O2 /QxCORE-AVX2 /Qopenmp
-          set CFLAGS=/O2 /QxCORE-AVX2
+          set CFLAGS=/O2 /QxCORE-AVX2 /Qopenmp
           set CXXFLAGS=/O2 /QxCORE-AVX2
 
           set OMP_NUM_THREADS=8
@@ -91,22 +132,16 @@ jobs:
           set OMP_STACKSIZE=64M
           set KMP_STACKSIZE=64M
 
-          py -3 -m meson setup build --buildtype=release --optimization=2 -Dlapack=mkl-rt -Dfortran_link_args=/Qopenmp
+          py -3 -m meson setup build --buildtype=release --optimization=2 -Dlapack=mkl-rt
           if errorlevel 1 exit /b 1
 
           py -3 -m meson compile -C build -j 4
           if errorlevel 1 exit /b 1
 
-          exit /b 0
-          '@
-
-          $buildScriptPath = Join-Path $env:RUNNER_TEMP "build-xtb.cmd"
-          Set-Content -Path $buildScriptPath -Value $buildScript -Encoding ascii
-
-          & $env:ComSpec /d /c "`"$buildScriptPath`""
-          if ($LASTEXITCODE -ne 0) {
-            throw "Konfiguracja lub kompilacja xtb nie powiodła się."
-          }
+          if not exist build\xtb.exe (
+            echo ERROR: build\xtb.exe was not created.
+            exit /b 1
+          )
 
       - name: Set executable stack to 128 MiB
         shell: pwsh
@@ -114,29 +149,29 @@ jobs:
           $ErrorActionPreference = "Stop"
 
           $exe = Join-Path $PWD "build\xtb.exe"
+
           if (-not (Test-Path $exe)) {
-            $found = Get-ChildItem -Path build -Filter xtb.exe -Recurse |
-              Select-Object -First 1
-            if ($null -eq $found) {
-              throw "Nie znaleziono xtb.exe po kompilacji."
-            }
-            $exe = $found.FullName
+            throw "Nie znaleziono build\xtb.exe."
           }
 
           $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+
           if (-not (Test-Path $vswhere)) {
-            throw "Nie znaleziono vswhere.exe do lokalizacji editbin."
+            throw "Nie znaleziono vswhere.exe."
           }
 
           $vsPath = & $vswhere -latest -products '*' -property installationPath
+
           if (-not $vsPath) {
-            throw "Nie znaleziono instalacji Visual Studio."
+            throw "Nie wykryto instalacji Visual Studio Build Tools."
           }
 
-          $editbin = Get-ChildItem `
-            -Path (Join-Path $vsPath "VC\Tools\MSVC") `
-            -Filter editbin.exe -Recurse |
-            Where-Object { $_.FullName -match '\\Hostx64\\x64\\editbin\.exe$' } |
+          $msvcRoot = Join-Path $vsPath "VC\Tools\MSVC"
+
+          $editbin = Get-ChildItem -Path $msvcRoot -Filter editbin.exe -Recurse |
+            Where-Object {
+              $_.FullName -match '\\Hostx64\\x64\\editbin\.exe$'
+            } |
             Select-Object -First 1
 
           if ($null -eq $editbin) {
@@ -144,81 +179,50 @@ jobs:
           }
 
           & $editbin.FullName /STACK:134217728 $exe
+
           if ($LASTEXITCODE -ne 0) {
             throw "Nie udało się ustawić stosu 128 MiB."
           }
 
-          Write-Host "Ustawiono stos 128 MiB: $exe"
+          Write-Host "Ustawiono stos 128 MiB."
 
-      - name: Smoke test
+      - name: Smoke test with water
+        shell: cmd
+        run: |
+          call "C:\Program Files (x86)\Intel\oneAPI\setvars.bat" intel64
+          if errorlevel 1 exit /b 1
+
+          set OMP_NUM_THREADS=8
+          set MKL_NUM_THREADS=8
+          set OMP_DYNAMIC=FALSE
+          set MKL_DYNAMIC=FALSE
+          set OMP_MAX_ACTIVE_LEVELS=1
+          set OMP_STACKSIZE=64M
+          set KMP_STACKSIZE=64M
+
+          > water.xyz echo 3
+          >> water.xyz echo water smoke test
+          >> water.xyz echo O  0.000000  0.000000  0.000000
+          >> water.xyz echo H  0.758602  0.000000  0.504284
+          >> water.xyz echo H -0.758602  0.000000  0.504284
+
+          build\xtb.exe water.xyz --sp --gfn 2
+          if errorlevel 1 exit /b 1
+
+          echo Test obliczeniowy zakonczony.
+
+      - name: Package executable and parameter files
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-
-          $exe = Join-Path $PWD "build\xtb.exe"
-          if (-not (Test-Path $exe)) {
-            $found = Get-ChildItem -Path build -Filter xtb.exe -Recurse |
-              Select-Object -First 1
-            if ($null -eq $found) {
-              throw "Nie znaleziono xtb.exe."
-            }
-            $exe = $found.FullName
-          }
-
-          $testDir = Join-Path $env:RUNNER_TEMP "xtb-smoke-test"
-          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
-
-          @"
-          3
-          water smoke test
-          O  0.000000  0.000000  0.000000
-          H  0.758602  0.000000  0.504284
-          H -0.758602  0.000000  0.504284
-          "@ | Set-Content -Path (Join-Path $testDir "water.xyz") -Encoding ascii
-
-          $env:OMP_NUM_THREADS = "8"
-          $env:MKL_NUM_THREADS = "8"
-          $env:OMP_DYNAMIC = "FALSE"
-          $env:MKL_DYNAMIC = "FALSE"
-          $env:OMP_MAX_ACTIVE_LEVELS = "1"
-          $env:OMP_STACKSIZE = "64M"
-          $env:KMP_STACKSIZE = "64M"
-
-          $setvars = $env:ONEAPI_SETVARS
-          $cmd = @"
-          call "$setvars" intel64
-          cd /d "$testDir"
-          "$exe" water.xyz --sp --gfn 2
-          "@
-
-          $cmdPath = Join-Path $env:RUNNER_TEMP "test-xtb.cmd"
-          Set-Content -Path $cmdPath -Value $cmd -Encoding ascii
-
-          & $env:ComSpec /d /c "`"$cmdPath`""
-          if ($LASTEXITCODE -ne 0) {
-            throw "Test obliczeniowy xtb nie powiódł się."
-          }
-
-          Write-Host "Test wody zakończony."
-
-      - name: Package executable and data
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-
-          $exe = Get-ChildItem -Path build -Filter xtb.exe -Recurse |
-            Select-Object -First 1
-
-          if ($null -eq $exe) {
-            throw "Nie znaleziono xtb.exe."
-          }
 
           $dist = Join-Path $PWD "xtb-windows-mkl"
           New-Item -ItemType Directory -Force -Path $dist | Out-Null
-          Copy-Item $exe.FullName (Join-Path $dist "xtb.exe") -Force
 
-          # Dołącz pliki parametrów, jeżeli projekt umieścił je w katalogu źródłowym.
-          $patterns = @(
+          $exe = Join-Path $PWD "build\xtb.exe"
+          Copy-Item $exe (Join-Path $dist "xtb.exe") -Force
+
+          $parameterNames = @(
             "param_gfn0-xtb.txt",
             "param_gfn1-xtb.txt",
             "param_gfn2-xtb.txt",
@@ -227,13 +231,52 @@ jobs:
             "param_gfnff-xtb.txt"
           )
 
-          foreach ($pattern in $patterns) {
-            Get-ChildItem -Path $PWD -Filter $pattern -File -Recurse `
-              -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -notlike "$dist\*" } |
-              ForEach-Object {
-                Copy-Item $_.FullName (Join-Path $dist $_.Name) -Force
+          foreach ($name in $parameterNames) {
+            $files = Get-ChildItem -Path $PWD -Filter $name -File -Recurse |
+              Where-Object {
+                $_.FullName -notlike "$dist\*"
               }
+
+            foreach ($file in $files) {
+              Copy-Item $file.FullName `
+                (Join-Path $dist $file.Name) -Force
+            }
+          }
+
+          $oneapiRoot = "C:\Program Files (x86)\Intel\oneAPI"
+
+          # Dołącz dostępne biblioteki wykonawcze Intel/MKL.
+          $runtimePatterns = @(
+            "mkl_rt*.dll",
+            "mkl_core*.dll",
+            "mkl_intel_thread*.dll",
+            "mkl_avx2*.dll",
+            "libiomp5md.dll",
+            "libifcoremd.dll",
+            "libifportmd.dll",
+            "libmmd.dll",
+            "svml_dispmd.dll",
+            "libirc.dll"
+          )
+
+          $runtimeDirs = @(
+            (Join-Path $oneapiRoot "redist\intel64_win\compiler"),
+            (Join-Path $oneapiRoot "redist\intel64_win\mkl"),
+            (Join-Path $oneapiRoot "compiler\latest\bin"),
+            (Join-Path $oneapiRoot "mkl\latest\bin")
+          )
+
+          foreach ($dir in $runtimeDirs) {
+            if (Test-Path $dir) {
+              foreach ($pattern in $runtimePatterns) {
+                Get-ChildItem -Path $dir -Filter $pattern -File `
+                  -ErrorAction SilentlyContinue |
+                  ForEach-Object {
+                    Copy-Item $_.FullName `
+                      (Join-Path $dist $_.Name) -Force
+                  }
+              }
+            }
           }
 
           @'
@@ -246,24 +289,31 @@ jobs:
           set OMP_MAX_ACTIVE_LEVELS=1
           set OMP_STACKSIZE=64M
           set KMP_STACKSIZE=64M
+          set XTBPATH=%~dp0
           "%~dp0xtb.exe" %*
-          '@ | Set-Content -Path (Join-Path $dist "run-xtb.bat") -Encoding ascii
+          '@ | Set-Content `
+            -Path (Join-Path $dist "run-xtb.bat") `
+            -Encoding ascii
 
-          @"
-          Build: Intel oneAPI ifx/icx
-          BLAS/LAPACK: Intel oneMKL (mkl-rt)
-          Compile jobs: 4
+          @'
+          Project: grimme-lab/xtb
+          Compiler: Intel oneAPI ifx/icx
+          Linear algebra backend: MKL runtime (mkl-rt)
+          CPU target: AVX2
+          Compile parallelism: 4 jobs
           Runtime thread limits: OMP=8, MKL=8
           Executable stack: 128 MiB
-          Target CPU: Intel Core i7-6820HQ (AVX2)
-          "@ | Set-Content -Path (Join-Path $dist "BUILD-INFO.txt") -Encoding utf8
+          Note: verify runtime DLL dependencies on the target Windows machine.
+          '@ | Set-Content `
+            -Path (Join-Path $dist "BUILD-INFO.txt") `
+            -Encoding ascii
 
           Write-Host "Zawartość paczki:"
-          Get-ChildItem $dist -Recurse |
-            Select-Object FullName, Length |
+          Get-ChildItem $dist -File |
+            Select-Object Name, Length |
             Format-Table -AutoSize
 
-      - name: Upload artifact
+      - name: Upload Windows MKL artifact
         uses: actions/upload-artifact@v4
         with:
           name: xtb-windows-mkl-avx2
