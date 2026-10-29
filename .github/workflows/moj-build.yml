@@ -1,4 +1,5 @@
-name: Package g-xTB Windows binary (stack 128 MiB)
+
+name: Build xtb Windows MKL (i7-6820HQ, stack 128 MiB)
 
 on:
   workflow_dispatch:
@@ -7,110 +8,265 @@ permissions:
   contents: read
 
 jobs:
-  gxtb-windows:
+  build:
     runs-on: windows-2022
-    timeout-minutes: 30
+    timeout-minutes: 60
+
+    env:
+      OMP_NUM_THREADS: "8"
+      MKL_NUM_THREADS: "8"
+      OMP_DYNAMIC: "FALSE"
+      MKL_DYNAMIC: "FALSE"
+      OMP_MAX_ACTIVE_LEVELS: "1"
+      OMP_STACKSIZE: "64M"
+      KMP_STACKSIZE: "64M"
 
     steps:
-      - name: Checkout g-xTB repository (contains official binaries)
+      - name: Checkout xtb source
         uses: actions/checkout@v4
         with:
-          repository: grimme-lab/g-xtb
+          repository: grimme-lab/xtb
           ref: main
-          path: g-xtb-src
+          submodules: recursive
+          fetch-depth: 1
 
-      - name: Prepare MSVC tools
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-
-      - name: Extract official Windows binary
+      - name: Install Intel oneAPI HPC Toolkit
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          $zip = Get-ChildItem 'g-xtb-src\binaries\*windows-x86_64.zip' | Select-Object -First 1
-          if (-not $zip) {
-            throw 'Official Windows x86_64 ZIP was not found in grimme-lab/g-xtb/binaries.'
-          }
-          New-Item -ItemType Directory -Force -Path 'stage' | Out-Null
-          Expand-Archive -LiteralPath $zip.FullName -DestinationPath 'stage' -Force
-          $exe = Get-ChildItem 'stage' -Recurse -Filter 'xtb.exe' | Select-Object -First 1
-          if (-not $exe) {
-            Get-ChildItem 'stage' -Recurse | Format-Table FullName
-            throw 'xtb.exe was not found in the official ZIP.'
-          }
-          $stageRoot = (Resolve-Path 'stage').Path
-          $relativeExe = [System.IO.Path]::GetRelativePath($stageRoot, $exe.FullName)
-          $relativeExe = $relativeExe -replace '/', '\\'
-          "XTB_EXE=$($exe.FullName)" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          "XTB_REL=$relativeExe" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          Write-Host "Found executable: $($exe.FullName)"
-          Write-Host "Relative executable path: $relativeExe"
-          Get-ChildItem 'stage' -Recurse | Select-Object FullName,Length
+          $ErrorActionPreference = "Stop"
 
-      - name: Set Windows executable stack reserve to 128 MiB
+          winget install `
+            --id Intel.OneAPI.HPCToolkit `
+            --exact `
+            --silent `
+            --accept-package-agreements `
+            --accept-source-agreements `
+            --disable-interactivity
+
+          $setvars = "C:\Program Files (x86)\Intel\oneAPI\setvars.bat"
+
+          if (-not (Test-Path $setvars)) {
+            throw "Nie znaleziono setvars.bat: $setvars"
+          }
+
+          "ONEAPI_SETVARS=$setvars" |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install Meson and Ninja
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          if (-not (Get-Command editbin.exe -ErrorAction SilentlyContinue)) {
-            throw 'editbin.exe is unavailable on this runner; cannot apply the requested PE stack-reserve change.'
-          }
-          & editbin.exe /STACK:134217728 "$env:XTB_EXE"
+          $ErrorActionPreference = "Stop"
+          py -3 -m pip install --upgrade pip meson ninja
+
+          py -3 -m meson --version
+          py -3 -m ninja --version
+
+      - name: Configure and compile with Intel MKL
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $buildScript = @'
+          @echo off
+          call "%ONEAPI_SETVARS%" intel64
+          if errorlevel 1 exit /b 1
+
+          where ifx
+          if errorlevel 1 exit /b 1
+
+          where icx
+          if errorlevel 1 exit /b 1
+
+          set FC=ifx
+          set CC=icx
+          set FCFLAGS=/O2 /QxCORE-AVX2 /Qopenmp
+          set CFLAGS=/O2 /QxCORE-AVX2
+          set CXXFLAGS=/O2 /QxCORE-AVX2
+
+          set OMP_NUM_THREADS=8
+          set MKL_NUM_THREADS=8
+          set OMP_DYNAMIC=FALSE
+          set MKL_DYNAMIC=FALSE
+          set OMP_MAX_ACTIVE_LEVELS=1
+          set OMP_STACKSIZE=64M
+          set KMP_STACKSIZE=64M
+
+          py -3 -m meson setup build --buildtype=release --optimization=2 -Dlapack=mkl-rt -Dfortran_link_args=/Qopenmp
+          if errorlevel 1 exit /b 1
+
+          py -3 -m meson compile -C build -j 4
+          if errorlevel 1 exit /b 1
+
+          exit /b 0
+          '@
+
+          $buildScriptPath = Join-Path $env:RUNNER_TEMP "build-xtb.cmd"
+          Set-Content -Path $buildScriptPath -Value $buildScript -Encoding ascii
+
+          & $env:ComSpec /d /c "`"$buildScriptPath`""
           if ($LASTEXITCODE -ne 0) {
-            throw "editbin failed with exit code $LASTEXITCODE"
+            throw "Konfiguracja lub kompilacja xtb nie powiodła się."
           }
 
-      - name: Smoke test g-xTB calculation
+      - name: Set executable stack to 128 MiB
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          @'
+          $ErrorActionPreference = "Stop"
+
+          $exe = Join-Path $PWD "build\xtb.exe"
+          if (-not (Test-Path $exe)) {
+            $found = Get-ChildItem -Path build -Filter xtb.exe -Recurse |
+              Select-Object -First 1
+            if ($null -eq $found) {
+              throw "Nie znaleziono xtb.exe po kompilacji."
+            }
+            $exe = $found.FullName
+          }
+
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          if (-not (Test-Path $vswhere)) {
+            throw "Nie znaleziono vswhere.exe do lokalizacji editbin."
+          }
+
+          $vsPath = & $vswhere -latest -products '*' -property installationPath
+          if (-not $vsPath) {
+            throw "Nie znaleziono instalacji Visual Studio."
+          }
+
+          $editbin = Get-ChildItem `
+            -Path (Join-Path $vsPath "VC\Tools\MSVC") `
+            -Filter editbin.exe -Recurse |
+            Where-Object { $_.FullName -match '\\Hostx64\\x64\\editbin\.exe$' } |
+            Select-Object -First 1
+
+          if ($null -eq $editbin) {
+            throw "Nie znaleziono editbin.exe dla x64."
+          }
+
+          & $editbin.FullName /STACK:134217728 $exe
+          if ($LASTEXITCODE -ne 0) {
+            throw "Nie udało się ustawić stosu 128 MiB."
+          }
+
+          Write-Host "Ustawiono stos 128 MiB: $exe"
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          $exe = Join-Path $PWD "build\xtb.exe"
+          if (-not (Test-Path $exe)) {
+            $found = Get-ChildItem -Path build -Filter xtb.exe -Recurse |
+              Select-Object -First 1
+            if ($null -eq $found) {
+              throw "Nie znaleziono xtb.exe."
+            }
+            $exe = $found.FullName
+          }
+
+          $testDir = Join-Path $env:RUNNER_TEMP "xtb-smoke-test"
+          New-Item -ItemType Directory -Force -Path $testDir | Out-Null
+
+          @"
           3
           water smoke test
           O  0.000000  0.000000  0.000000
           H  0.758602  0.000000  0.504284
           H -0.758602  0.000000  0.504284
-          '@ | Set-Content -Path 'water.xyz' -Encoding ascii
+          "@ | Set-Content -Path (Join-Path $testDir "water.xyz") -Encoding ascii
 
-          $env:OMP_NUM_THREADS = '1'
-          $env:OMP_STACKSIZE = '64m'
-          $env:KMP_STACKSIZE = '64m'
-          $env:PATH = "$(Split-Path -Parent $env:XTB_EXE);$env:PATH"
-          Push-Location (Split-Path -Parent $env:XTB_EXE)
-          try {
-            & "$env:XTB_EXE" "$env:GITHUB_WORKSPACE\water.xyz" --gxtb --sp
-            if ($LASTEXITCODE -ne 0) {
-              throw "g-xTB smoke test failed with exit code $LASTEXITCODE"
-            }
-          } finally {
-            Pop-Location
+          $env:OMP_NUM_THREADS = "8"
+          $env:MKL_NUM_THREADS = "8"
+          $env:OMP_DYNAMIC = "FALSE"
+          $env:MKL_DYNAMIC = "FALSE"
+          $env:OMP_MAX_ACTIVE_LEVELS = "1"
+          $env:OMP_STACKSIZE = "64M"
+          $env:KMP_STACKSIZE = "64M"
+
+          $setvars = $env:ONEAPI_SETVARS
+          $cmd = @"
+          call "$setvars" intel64
+          cd /d "$testDir"
+          "$exe" water.xyz --sp --gfn 2
+          "@
+
+          $cmdPath = Join-Path $env:RUNNER_TEMP "test-xtb.cmd"
+          Set-Content -Path $cmdPath -Value $cmd -Encoding ascii
+
+          & $env:ComSpec /d /c "`"$cmdPath`""
+          if ($LASTEXITCODE -ne 0) {
+            throw "Test obliczeniowy xtb nie powiódł się."
           }
 
-      - name: Package Windows binary and runtime files
+          Write-Host "Test wody zakończony."
+
+      - name: Package executable and data
         shell: pwsh
         run: |
-          $ErrorActionPreference = 'Stop'
-          New-Item -ItemType Directory -Force -Path 'dist' | Out-Null
-          Copy-Item -Path 'stage\*' -Destination 'dist' -Recurse -Force
-          $relativeExe = $env:XTB_REL
-          $exeDirectory = Split-Path -Parent $relativeExe
-          if ([string]::IsNullOrWhiteSpace($exeDirectory)) { $exeDirectory = '.' }
-          @"
+          $ErrorActionPreference = "Stop"
+
+          $exe = Get-ChildItem -Path build -Filter xtb.exe -Recurse |
+            Select-Object -First 1
+
+          if ($null -eq $exe) {
+            throw "Nie znaleziono xtb.exe."
+          }
+
+          $dist = Join-Path $PWD "xtb-windows-mkl"
+          New-Item -ItemType Directory -Force -Path $dist | Out-Null
+          Copy-Item $exe.FullName (Join-Path $dist "xtb.exe") -Force
+
+          # Dołącz pliki parametrów, jeżeli projekt umieścił je w katalogu źródłowym.
+          $patterns = @(
+            "param_gfn0-xtb.txt",
+            "param_gfn1-xtb.txt",
+            "param_gfn2-xtb.txt",
+            "param_ipea-xtb.txt",
+            "param_gfnff.xtb",
+            "param_gfnff-xtb.txt"
+          )
+
+          foreach ($pattern in $patterns) {
+            Get-ChildItem -Path $PWD -Filter $pattern -File -Recurse `
+              -ErrorAction SilentlyContinue |
+              Where-Object { $_.FullName -notlike "$dist\*" } |
+              ForEach-Object {
+                Copy-Item $_.FullName (Join-Path $dist $_.Name) -Force
+              }
+          }
+
+          @'
           @echo off
           setlocal
-          set "OMP_NUM_THREADS=1"
-          set "OMP_STACKSIZE=64m"
-          set "KMP_STACKSIZE=64m"
-          set "PATH=%~dp0$exeDirectory;%PATH%"
-          "%~dp0$relativeExe" %*
-          exit /b %ERRORLEVEL%
-          "@ | Set-Content -Path 'dist\run-gxtb.bat' -Encoding ascii
-          Compress-Archive -Path 'dist\*' -DestinationPath 'g-xtb-windows-x64-stack128.zip' -Force
+          set OMP_NUM_THREADS=8
+          set MKL_NUM_THREADS=8
+          set OMP_DYNAMIC=FALSE
+          set MKL_DYNAMIC=FALSE
+          set OMP_MAX_ACTIVE_LEVELS=1
+          set OMP_STACKSIZE=64M
+          set KMP_STACKSIZE=64M
+          "%~dp0xtb.exe" %*
+          '@ | Set-Content -Path (Join-Path $dist "run-xtb.bat") -Encoding ascii
 
-      - name: Upload g-xTB artifact
+          @"
+          Build: Intel oneAPI ifx/icx
+          BLAS/LAPACK: Intel oneMKL (mkl-rt)
+          Compile jobs: 4
+          Runtime thread limits: OMP=8, MKL=8
+          Executable stack: 128 MiB
+          Target CPU: Intel Core i7-6820HQ (AVX2)
+          "@ | Set-Content -Path (Join-Path $dist "BUILD-INFO.txt") -Encoding utf8
+
+          Write-Host "Zawartość paczki:"
+          Get-ChildItem $dist -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize
+
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: g-xtb-windows-x64-stack128
-          path: g-xtb-windows-x64-stack128.zip
+          name: xtb-windows-mkl-avx2
+          path: xtb-windows-mkl/
           if-no-files-found: error
-          retention-days: 14
+          retention-days: 30
